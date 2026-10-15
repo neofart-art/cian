@@ -2,6 +2,8 @@
 
 Облачный executor Codex не запустился (ошибка provisioning/authorization). Изменения внесены через GitHub в xata/initial-app; проверки выполняются GitHub Actions, без доступа к OMV.
 
+Полный [прогон для c7e018b](https://github.com/neofart-art/cian/actions/runs/38751902491) завершился успешно: обычные тесты, DOM/persistent-profile, обе конфигурации Compose, JavaScript, сборка обоих образов, headed healthcheck и временный noVNC с сохранением volume.
+
 В XATA checks выполняются:
 - обычные unit/regression-тесты, включая прежние CSV preview/confirm/history/XLSX, миграцию старой SQLite и сохранение first_seen;
 - обе команды docker compose config --quiet: обычный режим и временный browser-login override;

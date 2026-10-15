@@ -102,6 +102,14 @@ class Collector:
                     return self.result('error', items=[], error='Не распознана обычная выдача ЦИАН. Требуется проверка DOM на OMV.')
                 return self.result('authorized', items=list(items.values()))
             except (PlaywrightError, ValueError, SourceError) as exc:
+                # A navigation timeout may already show a challenge. Inspect once,
+                # without retrying navigation or interacting with the challenge.
+                try:
+                    state = await self.inspect()
+                    if state in ('confirmation_required', 'login_required'):
+                        return self.result(state, items=[])
+                except PlaywrightError:
+                    pass
                 # No URL, HTML, cookies or login data in error responses/logs.
                 return self.result('error', items=[], error=f'Не удалось прочитать выдачу ({type(exc).__name__}). Проверьте браузер вручную.')
 

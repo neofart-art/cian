@@ -182,3 +182,28 @@ def test_browser_api_auth_and_manual_mode(monkeypatch):
     assert client.post('/collect', json={'url': 'http://127.0.0.1/'}).status_code == 422
     monkeypatch.setattr(service, 'MANUAL', True)
     assert client.post('/collect', json={'url': 'https://cian.ru/cat.php'}).status_code == 409
+
+
+def test_navigation_timeout_with_visible_challenge(monkeypatch):
+    pytest.importorskip('playwright')
+    import asyncio
+    from collector import service
+    from playwright.async_api import Error
+
+    class Page:
+        async def goto(self, *args, **kwargs):
+            raise Error('navigation timed out')
+
+    async def scenario():
+        collector = service.Collector(None)
+        collector.page = Page()
+        async def inspect(http_status=200):
+            return 'confirmation_required'
+        collector.inspect = inspect
+        result = await collector.collect('https://cian.ru/cat.php')
+        assert result['status'] == 'confirmation_required'
+        assert result['message'] == ATTENTION
+        assert result['items'] == []
+        assert not collector.lock.locked()
+    monkeypatch.setattr(service, 'MANUAL', False)
+    asyncio.run(scenario())
