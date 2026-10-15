@@ -5,3 +5,8 @@ data
 .pytest_cache
 **/__pycache__
 tests
+
+backups
+work
+.secrets
+browser-profile

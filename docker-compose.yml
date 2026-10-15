@@ -9,6 +9,11 @@ services:
       APP_PASSWORD: ${APP_PASSWORD:?Set APP_PASSWORD in .env}
       PUBLIC_URL: ${PUBLIC_URL:-https://xata.neofart.ru}
       DATA_DIR: /data
+      BROWSER_SERVICE_URL: http://browser:8010
+      BROWSER_API_TOKEN: ${BROWSER_API_TOKEN:-${APP_PASSWORD:?Set APP_PASSWORD in .env}}
+      BROWSER_SCHEDULE_ENABLED: ${BROWSER_SCHEDULE_ENABLED:-false}
+      BROWSER_SEARCH_INTERVAL_SECONDS: ${BROWSER_SEARCH_INTERVAL_SECONDS:-1800}
+      CIAN_SEARCH_URL: ${CIAN_SEARCH_URL:-}
     volumes:
       - xata_data:/data
     read_only: true
@@ -32,5 +37,45 @@ services:
       options:
         max-size: 5m
         max-file: '3'
+  browser:
+    build:
+      context: .
+      dockerfile: Dockerfile.browser
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 60s
+    environment:
+      BROWSER_API_TOKEN: ${BROWSER_API_TOKEN:-${APP_PASSWORD:?Set APP_PASSWORD in .env}}
+      BROWSER_PROFILE_DIR: /profile
+      BROWSER_MANUAL_ACCESS: "0"
+      DISPLAY: ":99"
+      HOME: /home/browser
+    volumes:
+      - browser_profile:/profile
+    # Internal HTTP API only. No published API, VNC or CDP ports.
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+      - /home/browser:size=16m,uid=10001,gid=10001,mode=700
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1g
+    cpus: 1.0
+    shm_size: 256m
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: '3'
 volumes:
   xata_data:
+  browser_profile:

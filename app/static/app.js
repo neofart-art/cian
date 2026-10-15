@@ -26,22 +26,43 @@ async function refresh() {
       cell(row, item.source || 'ЦИАН online');
       body.append(row);
     }
+    const browser = data.browser || {};
+    const labels = {authorized:'Авторизован', login_required:'Требуется вход', confirmation_required:'Требуется подтверждение/CAPTCHA', error:'Ошибка browser collector'};
+    document.querySelector('#browser-state').textContent = labels[browser.status] || browser.message || 'Состояние неизвестно';
+    document.querySelector('#browser-success').textContent = browser.last_success ? new Date(browser.last_success).toLocaleString('ru-RU') : 'Ещё не было';
+    document.querySelector('#browser-new').textContent = browser.new_count ?? 0;
+    document.querySelector('#browser-error').textContent = browser.last_error || '—';
     const run = data.run;
     status.className = run?.status === 'error' ? 'error' : run?.status === 'blocked' ? 'blocked' : '';
-    status.textContent = run ? `${run.message}${run.status === 'done' ? ` Получено: ${run.count}.` : ''}\nОнлайн-сбор · начало: ${new Date(run.started).toLocaleString('ru-RU')}` : 'Сбор ещё не запускался.';
+    status.textContent = run ? `${run.message}${run.status === 'done' ? ` Получено: ${run.count}.` : ''}\nСбор (${run.source === 'browser' ? 'браузер' : 'диагностика'}) · начало: ${new Date(run.started).toLocaleString('ru-RU')}` : 'Сбор ещё не запускался.';
     button.disabled = pending || run?.status === 'running';
   } catch (error) { status.className = 'error'; status.textContent = error.message; button.disabled = pending; }
 }
 form.addEventListener('submit', async event => {
   event.preventDefault(); pending = true; button.disabled = true;
   try {
-    const response = await fetch('/api/collect', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({max_price:Number(document.querySelector('#price').value),metro_minutes:Number(document.querySelector('#metro').value)})});
+    const response = await fetch('/api/browser/collect', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({max_price:Number(document.querySelector('#price').value),metro_minutes:Number(document.querySelector('#metro').value)})});
     if (!response.ok) { const error = await response.json(); throw new Error(typeof error.detail === 'string' ? error.detail : 'Проверьте значения фильтров.'); }
     pending = false; await refresh();
   } catch(error) { status.className = 'error'; status.textContent = error.message; }
   finally { pending = false; button.disabled = false; }
 });
-refresh(); setInterval(refresh, 5000);
+let browserRefreshPending = false;
+async function refreshBrowser() {
+  if (browserRefreshPending) return;
+  browserRefreshPending = true;
+  try {
+    const response = await fetch('/api/browser/status');
+    if (!response.ok) throw new Error('Не удалось проверить browser service');
+    const data = await response.json();
+    document.querySelector('#browser-connection').textContent = data.available
+      ? (data.manual_access ? 'Открыт режим ручного входа. После входа отключите noVNC по README.' : data.message)
+      : data.connection_error;
+  } catch (error) {
+    document.querySelector('#browser-connection').textContent = error.message;
+  } finally { browserRefreshPending = false; }
+}
+refresh(); refreshBrowser(); setInterval(refresh, 5000); setInterval(refreshBrowser, 15000);
 
 const fileInput = document.querySelector('#csv-file');
 const importSelect = document.querySelector('#import-select');

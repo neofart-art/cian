@@ -1,0 +1,7 @@
+# Temporary local-only manual login. Explicitly remove this override afterwards.
+services:
+  browser:
+    environment:
+      BROWSER_MANUAL_ACCESS: "1"
+    ports:
+      - "172.31.1.1:6080:6080"

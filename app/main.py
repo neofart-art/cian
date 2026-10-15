@@ -5,7 +5,7 @@ import os
 import secrets
 import sqlite3
 import threading
-from contextlib import contextmanager
+from contextlib import contextmanager, asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -18,6 +18,7 @@ from openpyxl import Workbook
 from pydantic import BaseModel, Field
 from app import source
 from app.csv_source import CianCsvSource, MAX_BYTES
+from app.browser_source import CianBrowserSource, BrowserAttention
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 log = logging.getLogger('xata')
@@ -67,6 +68,30 @@ with database() as conn:
         (token TEXT PRIMARY KEY, created REAL NOT NULL, payload TEXT NOT NULL)''')
 
 
+with database() as conn:
+    run_columns = {row['name'] for row in conn.execute('PRAGMA table_info(runs)')}
+    if 'source' not in run_columns:
+        conn.execute("ALTER TABLE runs ADD COLUMN source TEXT DEFAULT 'online'")
+    conn.execute('CREATE TABLE IF NOT EXISTS browser_state (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL)')
+    conn.execute('INSERT OR IGNORE INTO browser_state VALUES (1, ?)', (json.dumps({
+        'status': 'login_required', 'message': 'Требуется вход', 'last_success': None,
+        'new_count': 0, 'last_error': None, 'manual_access': False,
+    }),))
+
+
+def browser_state():
+    with database() as conn:
+        return json.loads(conn.execute('SELECT payload FROM browser_state WHERE id=1').fetchone()[0])
+
+
+def update_browser(**changes):
+    with database() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        state = json.loads(conn.execute('SELECT payload FROM browser_state WHERE id=1').fetchone()[0])
+        state.update(changes)
+        conn.execute('UPDATE browser_state SET payload=? WHERE id=1', (json.dumps(state, ensure_ascii=False),))
+
+
 LISTING_FIELDS = ('title', 'price', 'address', 'url', 'complex_name', 'area', 'floor', 'metro', 'metro_time', 'source', 'card_text', 'description', 'metro_walk_minutes')
 
 
@@ -92,7 +117,19 @@ def save_items(conn, items, now, imported=False):
     return {'added': added, 'updated': updated}
 
 
-app = FastAPI(title='Хата — поиск квартир', docs_url=None, redoc_url=None)
+@asynccontextmanager
+async def lifespan(app):
+    stop = threading.Event()
+    worker = threading.Thread(target=browser_scheduler, args=(stop,), daemon=True)
+    worker.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        await run_in_threadpool(worker.join, 2)
+
+
+app = FastAPI(title='Хата — поиск квартир', docs_url=None, redoc_url=None, lifespan=lifespan)
 
 
 class Filters(BaseModel):
@@ -135,17 +172,21 @@ def state():
     with database() as conn:
         listings = [dict(row) for row in conn.execute('SELECT * FROM listings ORDER BY last_seen DESC, price')]
         run = conn.execute('SELECT * FROM runs ORDER BY id DESC LIMIT 1').fetchone()
-    return {'listings': listings, 'run': dict(run) if run else None}
+    return {'listings': listings, 'run': dict(run) if run else None, 'browser': browser_state()}
 
 
-def run_collection(run_id, filters):
+def run_collection(run_id, filters, kind='online'):
     try:
-        items = source.CianOnlineSource().collect(filters)
+        items = (CianBrowserSource() if kind == 'browser' else source.CianOnlineSource()).collect(filters)
         now = datetime.now(timezone.utc).isoformat()
         with database() as conn:
-            save_items(conn, items, now)
+            conn.execute('BEGIN IMMEDIATE')
+            result = save_items(conn, items, now)
             conn.execute("UPDATE runs SET status='done', finished=?, message=?, count=? WHERE id=?",
                          (now, 'Сбор завершён. Критерии пешей доступности и вторичного жилья следует сверить в объявлении.', len(items), run_id))
+        if kind == 'browser':
+            update_browser(status='authorized', message='Авторизован', last_success=now,
+                           new_count=result['added'], last_error=None)
     except Exception as exc:
         message = str(exc) if isinstance(exc, source.SourceError) else 'Внутренняя ошибка сборщика; подробности в журнале сервера.'
         blocked = isinstance(exc, source.SourceBlocked)
@@ -155,6 +196,10 @@ def run_collection(run_id, filters):
             log.exception('Collection failed: run=%s', run_id)
         with database() as conn:
             conn.execute("UPDATE runs SET status=?, finished=?, message=? WHERE id=?", ('blocked' if blocked else 'error', datetime.now(timezone.utc).isoformat(), message, run_id))
+        if kind == 'browser':
+            status = exc.status if isinstance(exc, BrowserAttention) else 'error'
+            update_browser(status=status, message=message,
+                           last_error=None if blocked else message)
     finally:
         lock.release()
 
@@ -176,6 +221,91 @@ def collect(filters: Filters):
         lock.release()
         raise
     return {'id': run_id, 'search_url': source.search_url(filters.model_dump())}
+
+
+
+@app.get('/api/browser/status', dependencies=[Depends(auth)])
+def live_browser_status():
+    """No navigation; inspect the existing page, including after manual login."""
+    try:
+        current = CianBrowserSource().status()
+        if current['status'] != 'unknown' and not current.get('running') and not lock.locked():
+            update_browser(status=current['status'], message=current['message'],
+                           manual_access=current.get('manual_access', False))
+        return {**browser_state(), **current, 'available': True}
+    except source.SourceError as exc:
+        return {**browser_state(), 'available': False, 'connection_error': str(exc)}
+
+
+def start_browser(filters):
+    if not lock.acquire(blocking=False):
+        raise HTTPException(409, 'Сбор уже выполняется')
+    try:
+        now = datetime.now(timezone.utc)
+        with database() as conn:
+            last = conn.execute("SELECT started FROM runs WHERE source='browser' ORDER BY id DESC LIMIT 1").fetchone()
+            if last and (now - datetime.fromisoformat(last['started'])).total_seconds() < 60:
+                raise HTTPException(429, 'Между ручными запусками браузера нужна одна минута')
+            cursor = conn.execute('INSERT INTO runs(started,status,message,filters,source) VALUES (?,?,?,?,?)',
+                                  (now.isoformat(), 'running', 'Поиск через браузер', filters.model_dump_json(), 'browser'))
+            run_id = cursor.lastrowid
+        threading.Thread(target=run_collection, args=(run_id, filters.model_dump(), 'browser'), daemon=True).start()
+    except Exception:
+        lock.release()
+        raise
+    return {'id': run_id}
+
+
+@app.post('/api/browser/collect', status_code=202, dependencies=[Depends(auth)])
+def collect_browser(filters: Filters):
+    return start_browser(filters)
+
+
+def schedule_interval():
+    # Conservative floor applies even to a mistakenly short environment value.
+    return max(1800, int(os.getenv('BROWSER_SEARCH_INTERVAL_SECONDS', '1800')))
+
+
+def scheduler_tick():
+    if lock.locked():
+        return
+    saved = browser_state()
+    # Pause after attention; only explicit user retry/live status can resume.
+    if saved['status'] in ('login_required', 'confirmation_required'):
+        return
+    try:
+        current = CianBrowserSource().status()
+        update_browser(status=current['status'], message=current['message'],
+                       manual_access=current.get('manual_access', False))
+        if current['status'] not in ('authorized', 'unknown') or current.get('manual_access') or current.get('running'):
+            return
+        with database() as conn:
+            previous = conn.execute("SELECT started,filters FROM runs WHERE source='browser' ORDER BY id DESC LIMIT 1").fetchone()
+        if previous and (datetime.now(timezone.utc) - datetime.fromisoformat(previous['started'])).total_seconds() < schedule_interval():
+            return
+        filters = Filters.model_validate_json(previous['filters']) if previous else Filters()
+        start_browser(filters)
+    except HTTPException as exc:
+        if exc.status_code not in (409, 429):
+            raise
+    except source.SourceError as exc:
+        update_browser(last_error=str(exc))
+
+
+def browser_scheduler(stop):
+    if os.getenv('BROWSER_SCHEDULE_ENABLED', 'false').lower() not in ('1', 'true', 'yes'):
+        return
+    try:
+        interval = schedule_interval()
+    except ValueError:
+        log.error('BROWSER_SEARCH_INTERVAL_SECONDS must be an integer; scheduler disabled')
+        return
+    # No immediate collection on container startup/restart.
+    while not stop.wait(interval):
+        try:
+            scheduler_tick()
+        except Exception:
+            log.exception('Browser scheduler tick failed')
 
 
 class ImportConfirmation(BaseModel):

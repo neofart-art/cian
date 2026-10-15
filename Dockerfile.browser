@@ -1,0 +1,15 @@
+FROM mcr.microsoft.com/playwright/python:v1.58.0-noble
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 DISPLAY=:99 BROWSER_PROFILE_DIR=/profile
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends x11vnc novnc websockify \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 10001 browser \
+    && useradd --uid 10001 --gid browser --create-home browser \
+    && mkdir /profile && chown browser:browser /profile && chmod 700 /profile
+COPY requirements.txt requirements-browser.txt ./
+RUN pip install --no-cache-dir -r requirements-browser.txt
+COPY --chown=browser:browser app/source_types.py app/csv_source.py ./app/
+COPY --chown=browser:browser collector ./collector
+USER 10001:10001
+EXPOSE 8010
+CMD ["python", "-m", "collector.entrypoint"]
