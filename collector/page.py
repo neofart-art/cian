@@ -33,7 +33,7 @@ def classify(url, text, *, challenge=False, login=False, authorized=False, http_
             any(marker in path for marker in ('captcha', 'challenge', 'verify', 'tmgrdfrend')) or
             any(marker in lower for marker in (
                 'подтвердите, что вы человек', 'докажите, что вы не робот',
-                'вы не робот', 'доступ ограничен', 'проверка безопасности',
+                'вы не робот', 'доступ ограничен', 'проверка безопасности', 'дополнительная проверка', 'подтвердите действие',
                 'пройдите проверку', 'подтвердите вход', 'введите код',
                 'подтвердите номер', 'подозрительная активность', 'captcha'))):
         return 'confirmation_required'

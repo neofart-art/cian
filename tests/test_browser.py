@@ -156,3 +156,28 @@ def test_app_lock_and_schedule_pause(browser_app, monkeypatch):
     monkeypatch.setattr(main.CianBrowserSource, 'status', lambda self: {'status': 'unknown', 'message': 'Сессия ещё не проверена'})
     assert client.get('/api/browser/status').status_code == 200
     assert main.browser_state()['status'] == 'authorized'
+
+
+def test_browser_api_auth_and_manual_mode(monkeypatch):
+    pytest.importorskip('playwright')
+    import asyncio
+    from types import SimpleNamespace
+    from collector import service
+
+    monkeypatch.setenv('BROWSER_API_TOKEN', 'internal-test-token-16')
+    class Page:
+        url = 'about:blank'
+        async def evaluate(self, _):
+            return 1
+    collector = service.Collector(None)
+    collector.page = Page()
+    service.app.state.collector = collector
+    # No lifespan: no Chromium/network needed for access-control contracts.
+    client = TestClient(service.app)
+    assert client.get('/healthz').status_code == 200
+    assert client.get('/status').status_code == 401
+    client.headers['Authorization'] = 'Bearer internal-test-token-16'
+    assert client.get('/status').json()['status'] == 'unknown'
+    assert client.post('/collect', json={'url': 'http://127.0.0.1/'}).status_code == 422
+    monkeypatch.setattr(service, 'MANUAL', True)
+    assert client.post('/collect', json={'url': 'https://cian.ru/cat.php'}).status_code == 409

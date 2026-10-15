@@ -55,7 +55,7 @@ class Collector:
 
     def result(self, status, **kwargs):
         message = (ATTENTION if status == 'confirmation_required' else
-                   'Требуется вход в ЦИАН вручную в браузере' if status == 'login_required' else
+                   ATTENTION + '. Требуется вход в ЦИАН.' if status == 'login_required' else
                    'Сессия ещё не проверена после запуска браузера' if status == 'unknown' else
                    'Авторизован' if status == 'authorized' else 'Ошибка browser collector')
         return dict(status=status, message=message, **kwargs)
@@ -144,10 +144,13 @@ app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None)
 
 
 @app.get('/healthz')
-def health():
+async def health():
     collector = app.state.collector
-    if collector.page.is_closed() or not collector.context.browser.is_connected():
-        raise HTTPException(503, 'Chromium disconnected')
+    try:
+        # Persistent contexts need not expose a separate Browser object.
+        await collector.page.evaluate('1')
+    except PlaywrightError as exc:
+        raise HTTPException(503, 'Chromium disconnected') from exc
     return {'status': 'ok'}
 
 

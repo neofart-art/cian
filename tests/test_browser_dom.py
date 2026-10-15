@@ -28,7 +28,7 @@ def test_dom_extraction_challenge_and_persistent_profile(tmp_path):
         async with async_playwright() as playwright:
             profile = str(tmp_path / 'profile')
             context = await playwright.chromium.launch_persistent_context(profile, headless=True)
-            await context.route('**/*', lambda route: route.fulfill(status=200, content_type='text/html', body=HTML))
+            await context.route('**/*', lambda route: route.fulfill(status=200, content_type='text/html; charset=utf-8', body=HTML))
             page = context.pages[0]
             collector = Collector(context)
             collector.page = page
@@ -41,7 +41,7 @@ def test_dom_extraction_challenge_and_persistent_profile(tmp_path):
             await page.evaluate("localStorage.setItem('xata-fixture', 'retained')")
             await context.close()
             context = await playwright.chromium.launch_persistent_context(profile, headless=True)
-            await context.route('**/*', lambda route: route.fulfill(status=200, content_type='text/html', body=HTML))
+            await context.route('**/*', lambda route: route.fulfill(status=200, content_type='text/html; charset=utf-8', body=HTML))
             page = context.pages[0]
             collector = Collector(context)
             collector.page = page
@@ -63,12 +63,12 @@ def test_dom_extraction_challenge_and_persistent_profile(tmp_path):
             assert result['status'] == 'confirmation_required' and result['items'] == []
             collector.inspect = original
             await context.unroute('**/*')
-            await context.route('**/*', lambda route: route.fulfill(status=200, content_type='text/html',
+            await context.route('**/*', lambda route: route.fulfill(status=200, content_type='text/html; charset=utf-8',
                                                                   body='<body><button>Войти</button></body>'))
             result = await collector.collect(URL)
             assert result['status'] == 'login_required' and result['items'] == []
             await context.unroute('**/*')
-            await context.route('**/*', lambda route: route.fulfill(status=200, content_type='text/html',
+            await context.route('**/*', lambda route: route.fulfill(status=200, content_type='text/html; charset=utf-8',
                                                                   body='<body><span data-name="UserAvatar">Профиль</span><p>Unknown layout</p></body>'))
             # Fast deterministic timeout; unsupported DOM must never succeed empty.
             import collector.service as service

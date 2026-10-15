@@ -199,7 +199,7 @@ def run_collection(run_id, filters, kind='online'):
         if kind == 'browser':
             status = exc.status if isinstance(exc, BrowserAttention) else 'error'
             update_browser(status=status, message=message,
-                           last_error=None if blocked else message)
+                           **({} if blocked else {'last_error': message}))
     finally:
         lock.release()
 
