@@ -72,7 +72,8 @@ def finish(client, main):
     for _ in range(200):
         state = client.get('/api/state').json()
         if state['run'] and state['run']['status'] != 'running' and not main.lock.locked():
-            return state
+            # Re-read after the worker released its lock (metadata is persisted last).
+            return client.get('/api/state').json()
         time.sleep(.01)
     pytest.fail('background collection did not finish')
 

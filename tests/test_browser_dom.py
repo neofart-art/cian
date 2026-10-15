@@ -39,6 +39,7 @@ def test_dom_extraction_challenge_and_persistent_profile(tmp_path):
             assert 'СКРЫТЫЙ' not in result['items'][0]['card_text']
             # Synthetic local storage marker tests actual on-disk profile persistence.
             await page.evaluate("localStorage.setItem('xata-fixture', 'retained')")
+            await page.evaluate("document.cookie = 'xata_fixture=retained; Max-Age=86400; Secure; SameSite=Lax; Path=/'")
             await context.close()
             context = await playwright.chromium.launch_persistent_context(profile, headless=True)
             await context.route('**/*', lambda route: route.fulfill(status=200, content_type='text/html; charset=utf-8', body=HTML))
@@ -47,6 +48,7 @@ def test_dom_extraction_challenge_and_persistent_profile(tmp_path):
             collector.page = page
             await page.goto(URL)
             assert await page.evaluate("localStorage.getItem('xata-fixture')") == 'retained'
+            assert await page.evaluate("document.cookie.includes('xata_fixture=retained')")
             # A late challenge discards already extracted cards.
             original = collector.inspect
             inspections = 0

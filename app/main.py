@@ -170,6 +170,8 @@ def index():
 @app.get('/api/state', dependencies=[Depends(auth)])
 def state():
     with database() as conn:
+        # Read listings and their run from one SQLite snapshot.
+        conn.execute('BEGIN')
         listings = [dict(row) for row in conn.execute('SELECT * FROM listings ORDER BY last_seen DESC, price')]
         run = conn.execute('SELECT * FROM runs ORDER BY id DESC LIMIT 1').fetchone()
     return {'listings': listings, 'run': dict(run) if run else None, 'browser': browser_state()}
