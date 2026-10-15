@@ -28,6 +28,8 @@ def test_visible_text_classification_and_card():
         assert classify('https://cian.ru/cat.php', text, authorized=True) == 'confirmation_required'
     assert classify('https://cian.ru/tmgrdfrend/showcaptcha', '', authorized=True) == 'confirmation_required'
     assert classify('https://cian.ru/cat.php', '', authorized=True, http_status=429) == 'confirmation_required'
+    assert classify('https://cian.ru/cat.php', '', http_status=401) == 'login_required'
+    assert classify('https://cian.ru/logout/', '') == 'login_required'
     item = normalize_card({
         'url': 'https://www.cian.ru/sale/flat/00123/?from=search',
         'title': '1-комн. квартира, 34,7 м²',
@@ -161,8 +163,6 @@ def test_app_lock_and_schedule_pause(browser_app, monkeypatch):
 
 def test_browser_api_auth_and_manual_mode(monkeypatch):
     pytest.importorskip('playwright')
-    import asyncio
-    from types import SimpleNamespace
     from collector import service
 
     monkeypatch.setenv('BROWSER_API_TOKEN', 'internal-test-token-16')

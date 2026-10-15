@@ -37,7 +37,7 @@ def classify(url, text, *, challenge=False, login=False, authorized=False, http_
                 'пройдите проверку', 'подтвердите вход', 'введите код',
                 'подтвердите номер', 'подозрительная активность', 'captcha'))):
         return 'confirmation_required'
-    if login or any(marker in path for marker in ('/authenticate', '/login', '/signin')):
+    if http_status == 401 or login or any(marker in path for marker in ('/authenticate', '/login', '/signin', '/logout', '/logoff')):
         return 'login_required'
     return 'authorized' if authorized else 'unknown'
 

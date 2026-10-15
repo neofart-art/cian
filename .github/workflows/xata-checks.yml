@@ -51,6 +51,22 @@ jobs:
           done
           docker logs xata-browser-smoke
           exit 1
+      - name: Temporary noVNC mode and retained profile volume
+        run: |
+          docker exec xata-browser-smoke python -c "from pathlib import Path; Path('/profile/smoke-marker').write_text('retained')"
+          docker exec xata-browser-smoke x11vnc -storepasswd testpass /profile/vnc.pass
+          docker stop xata-browser-smoke
+          docker rm xata-browser-smoke
+          docker run -d --name xata-browser-smoke --init --read-only --cap-drop ALL --security-opt no-new-privileges:true --memory 1g --cpus 1 --pids-limit 256 --shm-size 256m --tmpfs /tmp:size=128m,mode=1777 --tmpfs /home/browser:size=16m,uid=10001,gid=10001,mode=700 -e HOME=/home/browser -e BROWSER_API_TOKEN=ci-test-password-16 -e BROWSER_MANUAL_ACCESS=1 -p 127.0.0.1:16080:6080 -v xata-browser-smoke-profile:/profile xata-browser-test
+          for attempt in $(seq 1 60); do
+            if curl --silent --fail http://127.0.0.1:16080/vnc.html >/dev/null; then
+              docker exec xata-browser-smoke python -c "from pathlib import Path; import socket; assert Path('/profile/smoke-marker').read_text() == 'retained'; s=socket.create_connection(('127.0.0.1', 5900), timeout=3); assert s.recv(12).startswith(b'RFB'); s.close()"
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs xata-browser-smoke
+          exit 1
       - name: Clean up smoke container
         if: always()
         run: |

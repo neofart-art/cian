@@ -68,7 +68,9 @@ class Collector:
             try:
                 response = await self.page.goto(url, wait_until='domcontentloaded', timeout=45000)
                 status_code = response.status if response else 200
-                if status_code >= 400 and status_code not in (403, 429):
+                if status_code in (401, 403, 429):
+                    return self.result('login_required' if status_code == 401 else 'confirmation_required', items=[])
+                if status_code >= 400:
                     return self.result('error', items=[], error=f'ЦИАН вернул HTTP {status_code}')
                 # Poll only this rendered page; no retries/navigation/challenge solving.
                 for _ in range(60):
