@@ -6,8 +6,7 @@ from urllib.parse import urlencode
 import httpx
 
 
-class SourceError(Exception):
-    pass
+from app.source_types import SourceError, SourceBlocked
 
 
 def search_url(filters):
@@ -22,7 +21,7 @@ def search_url(filters):
 def parse_page(html):
     lower = html.lower()
     if any(marker in lower for marker in ('captcha', 'докажите, что вы не робот', 'доступ ограничен')):
-        raise SourceError('Циан запросил CAPTCHA или ограничил доступ. Сбор остановлен.')
+        raise SourceBlocked('Циан запросил CAPTCHA или ограничил доступ. Сбор остановлен.')
     scripts = re.findall(r'<script\b[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>', html, re.S | re.I)
     offers = []
     def visit(value):
@@ -65,9 +64,18 @@ def collect(filters):
         with httpx.Client(timeout=30, follow_redirects=False, headers={'User-Agent': 'XataCollector/0.1 (personal property search)'}) as client:
             response = client.get(search_url(filters))
         if 'captcha' in response.headers.get('location', '').lower():
-            raise SourceError('Циан перенаправил запрос на CAPTCHA. Сбор остановлен, обход защиты не выполняется.')
+            raise SourceBlocked('Циан перенаправил запрос на CAPTCHA. Сбор остановлен, обход защиты не выполняется.')
+        if response.status_code in (403, 429):
+            raise SourceBlocked(f'Циан ограничил доступ (HTTP {response.status_code}). Можно импортировать CSV.')
         if response.status_code != 200:
             raise SourceError(f'Циан вернул HTTP {response.status_code}. Сбор остановлен, обход ограничений не выполняется.')
         return [item for item in parse_page(response.text) if item['price'] <= filters['max_price']]
     except httpx.HTTPError as exc:
         raise SourceError(f'Ошибка подключения к Циан ({type(exc).__name__}). Проверьте доступ с сервера.') from exc
+
+
+class CianOnlineSource:
+    name = 'ЦИАН online'
+
+    def collect(self, filters):
+        return [{**item, 'source': self.name} for item in collect(filters)]

@@ -9,13 +9,15 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 from openpyxl import Workbook
 from pydantic import BaseModel, Field
 from app import source
+from app.csv_source import CianCsvSource, MAX_BYTES
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 log = logging.getLogger('xata')
@@ -36,9 +38,13 @@ def auth(credentials: HTTPBasicCredentials | None = Depends(security)):
 
 @contextmanager
 def database():
-    with sqlite3.connect(DB, timeout=10) as conn:
-        conn.row_factory = sqlite3.Row
-        yield conn
+    conn = sqlite3.connect(DB, timeout=10)
+    conn.row_factory = sqlite3.Row
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 with database() as conn:
@@ -47,6 +53,44 @@ with database() as conn:
     CREATE TABLE IF NOT EXISTS runs (id INTEGER PRIMARY KEY, started TEXT, finished TEXT, status TEXT, message TEXT, filters TEXT, count INTEGER DEFAULT 0);
     UPDATE runs SET status='error', message='Процесс был перезапущен во время сбора' WHERE status='running';
     ''')
+
+# Additive migration: existing volumes and first_seen values remain intact.
+with database() as conn:
+    columns = {row['name'] for row in conn.execute('PRAGMA table_info(listings)')}
+    for name, kind in {'complex_name': 'TEXT', 'area': 'REAL', 'floor': 'TEXT',
+                       'metro': 'TEXT', 'metro_time': 'TEXT',
+                       'source': "TEXT DEFAULT 'ЦИАН online'", 'last_imported': 'TEXT',
+                       'card_text': 'TEXT', 'description': 'TEXT', 'metro_walk_minutes': 'INTEGER'}.items():
+        if name not in columns:
+            conn.execute(f'ALTER TABLE listings ADD COLUMN {name} {kind}')
+    conn.execute('''CREATE TABLE IF NOT EXISTS import_previews
+        (token TEXT PRIMARY KEY, created REAL NOT NULL, payload TEXT NOT NULL)''')
+
+
+LISTING_FIELDS = ('title', 'price', 'address', 'url', 'complex_name', 'area', 'floor', 'metro', 'metro_time', 'source', 'card_text', 'description', 'metro_walk_minutes')
+
+
+def save_items(conn, items, now, imported=False):
+    added = updated = 0
+    for item in items:
+        previous = conn.execute('SELECT * FROM listings WHERE id=?', (item['id'],)).fetchone()
+        merged = dict(previous) if previous else {'title': 'Квартира'}
+        merged.update({key: item[key] for key in LISTING_FIELDS if item.get(key) not in (None, '')})
+        if item.get('metro_time'):
+            merged['metro_walk_minutes'] = item.get('metro_walk_minutes')
+        values = [merged.get(field) for field in LISTING_FIELDS]
+        if previous:
+            conn.execute('UPDATE listings SET ' + ','.join(f'{field}=?' for field in LISTING_FIELDS) +
+                         ',last_seen=?,last_imported=? WHERE id=?',
+                         (*values, now, now if imported else previous['last_imported'], item['id']))
+            updated += 1
+        else:
+            fields = ('id', *LISTING_FIELDS, 'first_seen', 'last_seen', 'last_imported')
+            conn.execute('INSERT INTO listings (' + ','.join(fields) + ') VALUES (' + ','.join('?' for _ in fields) + ')',
+                         (item['id'], *values, now, now, now if imported else None))
+            added += 1
+    return {'added': added, 'updated': updated}
+
 
 app = FastAPI(title='Хата — поиск квартир', docs_url=None, redoc_url=None)
 
@@ -75,6 +119,8 @@ async def protect_origin(request, call_next):
     response = await call_next(request)
     response.headers['X-Content-Type-Options'] = 'nosniff'
     response.headers['Referrer-Policy'] = 'same-origin'
+    if request.url.path == '/' or request.url.path.startswith('/api/'):
+        response.headers['Cache-Control'] = 'no-store'
     response.headers['Content-Security-Policy'] = "default-src 'self'; style-src 'self'; script-src 'self'; frame-ancestors 'none'; base-uri 'self'"
     return response
 
@@ -94,20 +140,21 @@ def state():
 
 def run_collection(run_id, filters):
     try:
-        items = source.collect(filters)
+        items = source.CianOnlineSource().collect(filters)
         now = datetime.now(timezone.utc).isoformat()
         with database() as conn:
-            for item in items:
-                conn.execute('''INSERT INTO listings VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
-                title=excluded.title,price=excluded.price,address=excluded.address,url=excluded.url,last_seen=excluded.last_seen''',
-                (item['id'], item['title'], item['price'], item['address'], item['url'], now, now))
+            save_items(conn, items, now)
             conn.execute("UPDATE runs SET status='done', finished=?, message=?, count=? WHERE id=?",
                          (now, 'Сбор завершён. Критерии пешей доступности и вторичного жилья следует сверить в объявлении.', len(items), run_id))
     except Exception as exc:
         message = str(exc) if isinstance(exc, source.SourceError) else 'Внутренняя ошибка сборщика; подробности в журнале сервера.'
-        log.exception('Collection failed: run=%s', run_id)
+        blocked = isinstance(exc, source.SourceBlocked)
+        if isinstance(exc, source.SourceError):
+            log.warning('Collection stopped: run=%s reason=%s', run_id, message)
+        else:
+            log.exception('Collection failed: run=%s', run_id)
         with database() as conn:
-            conn.execute("UPDATE runs SET status='error', finished=?, message=? WHERE id=?", (datetime.now(timezone.utc).isoformat(), message, run_id))
+            conn.execute("UPDATE runs SET status=?, finished=?, message=? WHERE id=?", ('blocked' if blocked else 'error', datetime.now(timezone.utc).isoformat(), message, run_id))
     finally:
         lock.release()
 
@@ -131,14 +178,68 @@ def collect(filters: Filters):
     return {'id': run_id, 'search_url': source.search_url(filters.model_dump())}
 
 
+class ImportConfirmation(BaseModel):
+    token: str = Field(min_length=32, max_length=128)
+
+
+@app.post('/api/import/preview', dependencies=[Depends(auth)])
+async def preview_import(request: Request):
+    content = bytearray()
+    async for chunk in request.stream():
+        content.extend(chunk)
+        if len(content) > MAX_BYTES:
+            raise HTTPException(413, 'CSV должен быть не больше 5 МБ.')
+    try:
+        parsed = await run_in_threadpool(CianCsvSource().parse, bytes(content))
+    except source.SourceError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    now = datetime.now(timezone.utc).timestamp()
+    token = secrets.token_urlsafe(32)
+    items = parsed['items']
+    with database() as conn:
+        conn.execute('DELETE FROM import_previews WHERE created<?', (now - 1800,))
+        # Bound disk consumption, including repeated previews never confirmed.
+        if conn.execute('SELECT count(*) FROM import_previews').fetchone()[0] >= 10:
+            raise HTTPException(429, 'Слишком много предварительных просмотров. Подождите 30 минут.')
+        existing = {row['id'] for row in conn.execute('SELECT id FROM listings')}
+        conn.execute('INSERT INTO import_previews VALUES (?,?,?)', (token, now, json.dumps(items, ensure_ascii=False)))
+    updated = sum(item['id'] in existing for item in items)
+    return {'token': token, 'found': parsed['found'], 'unique': len(items), 'duplicates': parsed['duplicates'],
+            'added': len(items) - updated, 'updated': updated, 'fields': parsed['fields'],
+            'sample': items[:5], 'expires_in': 1800}
+
+
+@app.post('/api/import/cancel', dependencies=[Depends(auth)])
+def cancel_import(confirmation: ImportConfirmation):
+    with database() as conn:
+        conn.execute('DELETE FROM import_previews WHERE token=?', (confirmation.token,))
+    return {'message': 'Импорт отменён. Объявления не изменены.'}
+
+
+@app.post('/api/import/confirm', dependencies=[Depends(auth)])
+def confirm_import(confirmation: ImportConfirmation):
+    now = datetime.now(timezone.utc)
+    with database() as conn:
+        # Serialize token consumption and updates in the same transaction.
+        conn.execute('BEGIN IMMEDIATE')
+        preview = conn.execute('SELECT * FROM import_previews WHERE token=?', (confirmation.token,)).fetchone()
+        if not preview or preview['created'] < now.timestamp() - 1800:
+            raise HTTPException(409, 'Предпросмотр истёк или уже импортирован. Выберите CSV заново.')
+        items = json.loads(preview['payload'])
+        result = save_items(conn, items, now.isoformat(), imported=True)
+        conn.execute('DELETE FROM import_previews WHERE token=?', (confirmation.token,))
+    log.info('CSV import complete: added=%s updated=%s', result['added'], result['updated'])
+    return {**result, 'count': len(items), 'message': 'CSV импортирован. Старые объявления сохранены.'}
+
+
 @app.get('/api/export.xlsx', dependencies=[Depends(auth)])
 def export():
     book = Workbook()
     sheet = book.active
     sheet.title = 'Объявления'
-    sheet.append(['ID', 'Название', 'Цена, ₽', 'Адрес', 'Ссылка', 'Впервые найдено (UTC)', 'Последний сбор (UTC)'])
+    sheet.append(['ID', 'Название', 'Цена, ₽', 'Адрес', 'Ссылка', 'Впервые найдено (UTC)', 'Последнее обновление (UTC)', 'ЖК', 'Площадь, м²', 'Этаж', 'Метро', 'Время до метро', 'Источник', 'Последний импорт (UTC)', 'Текст карточки', 'Описание', 'Пешком до метро, мин'])
     with database() as conn:
-        for row in conn.execute('SELECT * FROM listings ORDER BY price'):
+        for row in conn.execute('SELECT id,title,price,address,url,first_seen,last_seen,complex_name,area,floor,metro,metro_time,source,last_imported,card_text,description,metro_walk_minutes FROM listings ORDER BY price'):
             sheet.append([("'" + value if isinstance(value, str) and value.startswith(('=', '+', '-', '@')) else value) for value in row])
     sheet.freeze_panes = 'A2'
     sheet.auto_filter.ref = sheet.dimensions
