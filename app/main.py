@@ -10,12 +10,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, Response
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.responses import FileResponse, Response, RedirectResponse, JSONResponse
+from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 from openpyxl import Workbook
 from pydantic import BaseModel, Field
+from typing import Literal
+from app.auth import AuthStore, UNSAFE
 from app import source
 from app.csv_source import CianCsvSource, MAX_BYTES
 from app.browser_source import CianBrowserSource, BrowserAttention
@@ -25,22 +27,14 @@ log = logging.getLogger('xata')
 DATA = Path(os.getenv('DATA_DIR', 'data'))
 DATA.mkdir(parents=True, exist_ok=True)
 DB = DATA / 'xata.sqlite3'
-security = HTTPBasic(auto_error=False)
 lock = threading.Lock()
-
-
-def auth(credentials: HTTPBasicCredentials | None = Depends(security)):
-    username, password = os.getenv('APP_USER', ''), os.getenv('APP_PASSWORD', '')
-    if not username or len(password) < 16:
-        raise HTTPException(503, 'Задайте APP_USER и APP_PASSWORD длиной от 16 символов.')
-    if not credentials or not (secrets.compare_digest(credentials.username.encode(), username.encode()) and secrets.compare_digest(credentials.password.encode(), password.encode())):
-        raise HTTPException(401, 'Требуется вход', headers={'WWW-Authenticate': 'Basic'})
 
 
 @contextmanager
 def database():
     conn = sqlite3.connect(DB, timeout=10)
     conn.row_factory = sqlite3.Row
+    conn.execute('PRAGMA foreign_keys=ON')
     try:
         with conn:
             yield conn
@@ -77,6 +71,30 @@ with database() as conn:
         'status': 'login_required', 'message': 'Требуется вход', 'last_success': None,
         'new_count': 0, 'last_error': None, 'manual_access': False,
     }),))
+
+
+security = AuthStore(database)
+security.migrate()
+auth = security.current_user
+admin = security.admin_dependency()
+
+# User-owned review fields never participate in LISTING_FIELDS/save_items.
+with database() as conn:
+    columns = {row['name'] for row in conn.execute('PRAGMA table_info(listings)')}
+    for name, kind in {
+        'review_status': "TEXT NOT NULL DEFAULT 'new' CHECK(review_status IN ('new','viewed','rejected'))",
+        'review_updated_at': 'TEXT',
+        'review_updated_by': 'INTEGER REFERENCES users(id)',
+        'review_version': 'INTEGER NOT NULL DEFAULT 0',
+    }.items():
+        if name not in columns:
+            conn.execute(f'ALTER TABLE listings ADD COLUMN {name} {kind}')
+    conn.execute("""CREATE INDEX IF NOT EXISTS listings_review_order ON listings(
+        CASE review_status WHEN 'new' THEN 0 WHEN 'viewed' THEN 1 ELSE 2 END,first_seen DESC,id)""")
+
+LISTING_QUERY = '''SELECT l.*,u.display_name AS review_updated_by_name,u.username AS review_updated_by_username
+                   FROM listings l LEFT JOIN users u ON u.id=l.review_updated_by'''
+LISTING_ORDER = " ORDER BY CASE l.review_status WHEN 'new' THEN 0 WHEN 'viewed' THEN 1 ELSE 2 END,l.first_seen DESC,l.id"
 
 
 def browser_state():
@@ -130,6 +148,13 @@ async def lifespan(app):
 
 
 app = FastAPI(title='Хата — поиск квартир', docs_url=None, redoc_url=None, lifespan=lifespan)
+app.include_router(security.router())
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error(request, exc):
+    # FastAPI otherwise echoes invalid input, which may contain a new password.
+    return JSONResponse({'detail': [{key: error[key] for key in ('loc', 'msg', 'type')} for error in exc.errors()]}, status_code=422)
 
 
 class Filters(BaseModel):
@@ -146,35 +171,67 @@ def health():
 
 @app.middleware('http')
 async def protect_origin(request, call_next):
-    if request.method == 'POST':
+    denied = None
+    if request.method in UNSAFE:
         origin = request.headers.get('origin')
         expected = os.getenv('PUBLIC_URL', '').rstrip('/')
         if origin and origin != (expected or str(request.base_url).rstrip('/')):
-            return Response('Недопустимый Origin', status_code=403)
+            denied = Response('Недопустимый Origin', status_code=403)
         if request.headers.get('sec-fetch-site') == 'cross-site':
-            return Response(status_code=403)
-    response = await call_next(request)
+            denied = Response('Недопустимый Sec-Fetch-Site', status_code=403)
+    response = denied if denied is not None else await call_next(request)
     response.headers['X-Content-Type-Options'] = 'nosniff'
     response.headers['Referrer-Policy'] = 'same-origin'
-    if request.url.path == '/' or request.url.path.startswith('/api/'):
+    if request.url.path in ('/', '/login') or request.url.path.startswith('/api/'):
         response.headers['Cache-Control'] = 'no-store'
     response.headers['Content-Security-Policy'] = "default-src 'self'; style-src 'self'; script-src 'self'; frame-ancestors 'none'; base-uri 'self'"
     return response
 
 
-@app.get('/', dependencies=[Depends(auth)])
-def index():
+@app.get('/')
+def index(request: Request):
+    if not security.principal(request):
+        return RedirectResponse('/login', status_code=303)
     return FileResponse(Path(__file__).parent / 'static/index.html')
 
 
-@app.get('/api/state', dependencies=[Depends(auth)])
-def state():
+@app.get('/login')
+def login_page(request: Request):
+    if security.principal(request):
+        return RedirectResponse('/', status_code=303)
+    return FileResponse(Path(__file__).parent / 'static/login.html')
+
+
+@app.get('/api/state')
+def state(user=Depends(auth)):
     with database() as conn:
         # Read listings and their run from one SQLite snapshot.
         conn.execute('BEGIN')
-        listings = [dict(row) for row in conn.execute('SELECT * FROM listings ORDER BY last_seen DESC, price')]
+        listings = [dict(row) for row in conn.execute(LISTING_QUERY + LISTING_ORDER)]
         run = conn.execute('SELECT * FROM runs ORDER BY id DESC LIMIT 1').fetchone()
-    return {'listings': listings, 'run': dict(run) if run else None, 'browser': browser_state()}
+    result = {'listings': listings, 'user': user}
+    if user['role'] == 'admin':
+        result.update(run=dict(run) if run else None, browser=browser_state())
+    return result
+
+
+class Review(BaseModel):
+    status: Literal['new', 'viewed', 'rejected']
+
+
+@app.post('/api/listings/{listing_id}/review')
+def review_listing(listing_id: str, data: Review, user=Depends(auth)):
+    timestamp = datetime.now(timezone.utc).isoformat()
+    with database() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        cursor = conn.execute('''UPDATE listings SET review_status=?,review_updated_at=?,review_updated_by=?,
+                                 review_version=review_version+1 WHERE id=?''',
+                              (data.status, timestamp, user['id'], listing_id))
+        if not cursor.rowcount:
+            raise HTTPException(404, 'Объявление не найдено')
+        item = dict(conn.execute(LISTING_QUERY + ' WHERE l.id=?', (listing_id,)).fetchone())
+    log.info('Review changed user_id=%s listing_id=%s', user['id'], listing_id)
+    return item
 
 
 def run_collection(run_id, filters, kind='online'):
@@ -206,7 +263,7 @@ def run_collection(run_id, filters, kind='online'):
         lock.release()
 
 
-@app.post('/api/collect', status_code=202, dependencies=[Depends(auth)])
+@app.post('/api/collect', status_code=202, dependencies=[Depends(admin)])
 def collect(filters: Filters):
     if not lock.acquire(blocking=False):
         raise HTTPException(409, 'Сбор уже выполняется')
@@ -226,7 +283,7 @@ def collect(filters: Filters):
 
 
 
-@app.get('/api/browser/status', dependencies=[Depends(auth)])
+@app.get('/api/browser/status', dependencies=[Depends(admin)])
 def live_browser_status():
     """No navigation; inspect the existing page, including after manual login."""
     try:
@@ -258,7 +315,7 @@ def start_browser(filters):
     return {'id': run_id}
 
 
-@app.post('/api/browser/collect', status_code=202, dependencies=[Depends(auth)])
+@app.post('/api/browser/collect', status_code=202, dependencies=[Depends(admin)])
 def collect_browser(filters: Filters):
     return start_browser(filters)
 
@@ -314,7 +371,7 @@ class ImportConfirmation(BaseModel):
     token: str = Field(min_length=32, max_length=128)
 
 
-@app.post('/api/import/preview', dependencies=[Depends(auth)])
+@app.post('/api/import/preview', dependencies=[Depends(admin)])
 async def preview_import(request: Request):
     content = bytearray()
     async for chunk in request.stream():
@@ -341,14 +398,14 @@ async def preview_import(request: Request):
             'sample': items[:5], 'expires_in': 1800}
 
 
-@app.post('/api/import/cancel', dependencies=[Depends(auth)])
+@app.post('/api/import/cancel', dependencies=[Depends(admin)])
 def cancel_import(confirmation: ImportConfirmation):
     with database() as conn:
         conn.execute('DELETE FROM import_previews WHERE token=?', (confirmation.token,))
     return {'message': 'Импорт отменён. Объявления не изменены.'}
 
 
-@app.post('/api/import/confirm', dependencies=[Depends(auth)])
+@app.post('/api/import/confirm', dependencies=[Depends(admin)])
 def confirm_import(confirmation: ImportConfirmation):
     now = datetime.now(timezone.utc)
     with database() as conn:
@@ -364,14 +421,14 @@ def confirm_import(confirmation: ImportConfirmation):
     return {**result, 'count': len(items), 'message': 'CSV импортирован. Старые объявления сохранены.'}
 
 
-@app.get('/api/export.xlsx', dependencies=[Depends(auth)])
+@app.get('/api/export.xlsx', dependencies=[Depends(admin)])
 def export():
     book = Workbook()
     sheet = book.active
     sheet.title = 'Объявления'
-    sheet.append(['ID', 'Название', 'Цена, ₽', 'Адрес', 'Ссылка', 'Впервые найдено (UTC)', 'Последнее обновление (UTC)', 'ЖК', 'Площадь, м²', 'Этаж', 'Метро', 'Время до метро', 'Источник', 'Последний импорт (UTC)', 'Текст карточки', 'Описание', 'Пешком до метро, мин'])
+    sheet.append(['ID', 'Название', 'Цена, ₽', 'Адрес', 'Ссылка', 'Впервые найдено (UTC)', 'Последнее обновление (UTC)', 'ЖК', 'Площадь, м²', 'Этаж', 'Метро', 'Время до метро', 'Источник', 'Последний импорт (UTC)', 'Текст карточки', 'Описание', 'Пешком до метро, мин', 'Статус', 'Статус изменил', 'Дата изменения статуса (UTC)'])
     with database() as conn:
-        for row in conn.execute('SELECT id,title,price,address,url,first_seen,last_seen,complex_name,area,floor,metro,metro_time,source,last_imported,card_text,description,metro_walk_minutes FROM listings ORDER BY price'):
+        for row in conn.execute('''SELECT l.id,l.title,l.price,l.address,l.url,l.first_seen,l.last_seen,l.complex_name,l.area,l.floor,l.metro,l.metro_time,l.source,l.last_imported,l.card_text,l.description,l.metro_walk_minutes,l.review_status,u.display_name,l.review_updated_at FROM listings l LEFT JOIN users u ON u.id=l.review_updated_by ORDER BY l.price'''):
             sheet.append([("'" + value if isinstance(value, str) and value.startswith(('=', '+', '-', '@')) else value) for value in row])
     sheet.freeze_panes = 'A2'
     sheet.auto_filter.ref = sheet.dimensions

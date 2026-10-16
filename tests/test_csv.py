@@ -6,6 +6,7 @@ import time
 
 import pytest
 from fastapi.testclient import TestClient
+from tests.helpers import sign_in, unauthenticated
 from openpyxl import load_workbook
 from app import source
 from app.csv_source import CianCsvSource, parse_card_text, MAX_BYTES
@@ -82,8 +83,8 @@ def app_client(tmp_path, monkeypatch):
         conn.execute('INSERT INTO listings VALUES (?,?,?,?,?,?,?)', ('999', 'Не удалять', 12000000, '', 'https://cian.ru/sale/flat/999/', '2020', '2020'))
     from app import main
     importlib.reload(main)
-    with TestClient(main.app) as client:
-        client.auth = ('owner', 'long-test-password')
+    with TestClient(main.app, base_url='https://testserver') as client:
+        sign_in(client)
         yield client, main
 
 
@@ -130,7 +131,7 @@ def test_invalid_expired_unauthorized_and_atomic_import(app_client):
     client, main = app_client
     assert client.post('/api/import/preview', content=b'bad').status_code == 422
     assert client.post('/api/import/preview', content=csv_file(), headers={'Origin': 'https://evil.test'}).status_code == 403
-    assert client.post('/api/import/preview', content=csv_file(), auth=('bad', 'bad')).status_code == 401
+    assert unauthenticated(client, '/api/import/preview', content=csv_file()).status_code == 401
     malformed = csv_file([[URL, '', '100', '', ''], ['https://evil.test/', '', '1', '', '']])
     assert client.post('/api/import/preview', content=malformed).status_code == 422
     assert client.get('/api/state').json()['listings'][0]['price'] == 14000000

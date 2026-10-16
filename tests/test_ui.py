@@ -1,0 +1,145 @@
+"""Offline browser UI against the actual FastAPI app via an HTTPS TestClient bridge."""
+import asyncio
+import importlib
+import json
+import os
+from urllib.parse import urlsplit
+
+import pytest
+from fastapi.testclient import TestClient
+from tests.helpers import sign_in
+
+pytestmark = pytest.mark.skipif(os.getenv('RUN_BROWSER_TESTS') != '1', reason='Chromium UI tests opt in')
+
+
+def test_shared_review_ui_login_roles_refresh_and_layout(tmp_path, monkeypatch):
+    monkeypatch.setenv('DATA_DIR', str(tmp_path))
+    monkeypatch.setenv('APP_USER', 'owner')
+    monkeypatch.setenv('APP_PASSWORD', 'long-test-password')
+    monkeypatch.setenv('BROWSER_SCHEDULE_ENABLED', 'false')
+    monkeypatch.delenv('PUBLIC_URL', raising=False)
+    from app import main
+    importlib.reload(main)
+    monkeypatch.setattr(main.CianBrowserSource, 'status', lambda self: {'status':'authorized','message':'Авторизован','manual_access':False})
+    with main.database() as conn:
+        main.save_items(conn, [
+            {'id':key,'url':'https://www.cian.ru/sale/flat/' + key + '/',
+             'title':'Квартира','complex_name':'ЖК с длинным названием для проверки переноса строки',
+             'address':'Москва, улица с длинным названием, дом 15, корпус 2',
+             'price':11950000,'area':34.7,'floor':'4/9','metro':'Сокол','metro_time':'15 мин. пешком','card_text':'Описание квартиры для совместного просмотра'}
+            for key in ('123','456','999')
+        ], '2026-10-16T10:00:00+00:00')
+
+    with TestClient(main.app, base_url='https://xata.test') as client:
+        sign_in(client)
+        assert client.post('/api/users', json={'username':'agent','display_name':'Риелтор','password':'reviewer-password-16','role':'reviewer'}).status_code == 201
+        assert client.post('/api/auth/logout').status_code == 200
+
+        async def scenario():
+            from playwright.async_api import async_playwright
+            from playwright.async_api import expect
+            stale_state = None
+            inject_stale = False
+            stale_injected = 0
+            state_reads = 0
+
+            async def bridge(route):
+                nonlocal stale_injected, inject_stale, state_reads
+                request = route.request
+                parsed = urlsplit(request.url)
+                assert parsed.hostname == 'xata.test', 'UI must not contact external services'
+                path = parsed.path + ('?' + parsed.query if parsed.query else '')
+                if path == '/api/state':
+                    state_reads += 1
+                    if inject_stale:
+                        inject_stale = False
+                        stale_injected += 1
+                        await route.fulfill(status=200, content_type='application/json', body=json.dumps(stale_state))
+                        return
+                # The bridge has one real server-side cookie jar per browser fixture.
+                # Secure/HttpOnly cookie attributes and cross-client isolation are tested in test_multiuser.py.
+                headers = {key:value for key,value in request.headers.items()
+                           if key.lower() in ('content-type','origin','sec-fetch-site','x-csrf-token')}
+                response = client.request(request.method, path, content=request.post_data_buffer,
+                                          headers=headers, follow_redirects=False)
+                forwarded = {key:value for key,value in response.headers.items()
+                             if key.lower() not in ('set-cookie','content-length','content-encoding','transfer-encoding')}
+                await route.fulfill(status=response.status_code, headers=forwarded, body=response.content)
+
+            async with async_playwright() as playwright:
+                browser = await playwright.chromium.launch(headless=True)
+                context = await browser.new_context(viewport={'width':1440,'height':1100}, timezone_id='Europe/Moscow')
+                await context.route('**/*', bridge)
+                page = await context.new_page()
+                failures = []
+                page.on('pageerror', lambda error: failures.append(str(error)))
+                await page.goto('https://xata.test/')
+                await page.wait_for_url('https://xata.test/login')
+                await page.locator('#username').fill('agent')
+                await page.locator('#password').fill('reviewer-password-16')
+                await page.locator('#login-submit').click()
+                await page.wait_for_url('https://xata.test/')
+                await expect(page.locator('#listings tr')).to_have_count(3)
+                await expect(page.locator('#identity')).to_contain_text('Риелтор')
+                assert await page.locator('[data-admin]:visible').count() == 0
+                assert await page.locator('#listing-table th').all_text_contents() == [
+                    '№ ЦИАН','ЖК / адрес','Цена','Площадь','Этаж','Метро','До метро','Впервые найдено','Статус']
+                assert await page.locator('.table-wrap').evaluate('el => el.scrollWidth <= el.clientWidth')
+                assert await page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+                row = page.locator('tr[data-listing-id="123"]')
+                link = row.locator('td').nth(0).locator('a')
+                assert await link.text_content() == '123'
+                assert await link.get_attribute('target') == '_blank'
+                assert await link.get_attribute('rel') == 'noopener noreferrer'
+                stale_state = client.get('/api/state').json()
+                await row.locator('details').evaluate('el => {el.open=true}')
+                await page.evaluate('window.savedRow = document.querySelector(\'tr[data-listing-id="123"]\')')
+                await row.locator('select').select_option('viewed')
+                await expect(row.locator('.review-label')).to_have_text('Просмотрено')
+                await expect(row.locator('.review-meta')).to_contain_text('Риелтор')
+                inject_stale = True
+                await page.evaluate('refresh()')
+                assert stale_injected == 1
+                await expect(row.locator('.review-label')).to_have_text('Просмотрено')
+                assert await row.locator('details').evaluate('el => el.open')
+                assert await page.evaluate('window.savedRow === document.querySelector(\'tr[data-listing-id="123"]\')')
+                before = state_reads
+                await page.locator('[data-review-filter="new"]').click()
+                assert not await row.is_visible()
+                await page.locator('[data-review-filter="all"]').click()
+                assert await row.is_visible()
+                assert state_reads == before
+                await row.locator('select').select_option('rejected')
+                await expect(row.locator('.review-label')).to_have_text('Не подходит')
+                await row.locator('select').select_option('new')
+                await expect(row.locator('.review-label')).to_have_text('НОВОЕ')
+                await page.locator('#logout').click()
+                await page.wait_for_url('https://xata.test/login')
+                await page.locator('#username').fill('owner')
+                await page.locator('#password').fill('long-test-password')
+                await page.locator('#login-submit').click()
+                await page.wait_for_url('https://xata.test/')
+                await expect(page.locator('.export')).to_be_visible()
+                await page.locator('#users-panel > summary').click()
+                await expect(page.locator('#users-list .user-editor')).to_have_count(2)
+                await page.locator('#new-username').fill('anna')
+                await page.locator('#new-name').fill('Анна')
+                await page.locator('#new-password').fill('anna-password-12345')
+                await page.locator('#user-create button').click()
+                await expect(page.locator('#users-list .user-editor')).to_have_count(3)
+                await page.locator('.admin-tools > summary').click()
+                await page.locator('#csv-file').set_input_files({
+                    'name':'favorites.csv','mimeType':'text/csv',
+                    'buffer':b'url;title;price\nhttps://cian.ru/sale/flat/789/;CSV;10000000'
+                })
+                await expect(page.locator('#import-preview')).to_be_visible()
+                await page.locator('#import-confirm').click()
+                await expect(page.locator('#listings tr')).to_have_count(4)
+                await expect(page.locator('tr[data-listing-id="789"] .review-label')).to_have_text('НОВОЕ')
+                await page.set_viewport_size({'width':390,'height':844})
+                assert await page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+                assert await page.locator('.table-wrap').evaluate('el => el.scrollWidth > el.clientWidth')
+                assert failures == []
+                await context.close()
+                await browser.close()
+        asyncio.run(scenario())

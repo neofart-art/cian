@@ -4,6 +4,7 @@ import time
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from tests.helpers import sign_in, unauthenticated
 
 from app.browser_source import BrowserAttention, CianBrowserSource
 from app.source_types import SourceError
@@ -65,8 +66,8 @@ def browser_app(tmp_path, monkeypatch):
     monkeypatch.setenv('BROWSER_SCHEDULE_ENABLED', 'false')
     from app import main
     importlib.reload(main)
-    with TestClient(main.app) as client:
-        client.auth = ('owner', 'long-test-password')
+    with TestClient(main.app, base_url='https://testserver') as client:
+        sign_in(client)
         yield client, main
 
 
@@ -89,7 +90,7 @@ def test_browser_upsert_attention_and_csv_independence(browser_app, monkeypatch)
     client, main = browser_app
     items = [{'id': '123', 'url': 'https://cian.ru/sale/flat/123/', 'title': 'Квартира', 'price': 12000000, 'source': 'ЦИАН browser'}]
     monkeypatch.setattr(main.CianBrowserSource, 'collect', lambda self, filters: items)
-    assert client.post('/api/browser/collect', json={}, auth=('bad', 'bad')).status_code == 401
+    assert unauthenticated(client, '/api/browser/collect', json={}).status_code == 401
     assert client.post('/api/browser/collect', json={}, headers={'Origin': 'https://evil.test'}).status_code == 403
     assert client.post('/api/browser/collect', json={'metro_minutes': 0}).status_code == 422
     assert client.post('/api/browser/collect', json={}).status_code == 202

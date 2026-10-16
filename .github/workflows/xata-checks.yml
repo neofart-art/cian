@@ -23,7 +23,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install test dependencies
-        run: python -m pip install -r requirements-browser.txt pytest==8.3.5
+        run: python -m pip install -r requirements-app.txt -r requirements-browser.txt pytest==8.3.5
       - name: Unit and regression tests
         run: python -m pytest -q
       - name: Validate both Compose modes and JavaScript
@@ -31,10 +31,13 @@ jobs:
           docker compose -p xata config --quiet
           docker compose -p xata -f docker-compose.yml -f docker-compose.browser-login.yml config --quiet
           node --check app/static/app.js
+          node --check app/static/login.js
+          node --check app/static/review-state.js
+          node --test tests/review_state.test.cjs
       - name: Install test Chromium
         run: python -m playwright install --with-deps chromium
       - name: Offline DOM and persistent-profile tests
-        run: RUN_BROWSER_TESTS=1 python -m pytest -q tests/test_browser_dom.py
+        run: RUN_BROWSER_TESTS=1 python -m pytest -q tests/test_browser_dom.py tests/test_ui.py
       - name: Build both containers
         run: |
           docker build -t xata-app-test .

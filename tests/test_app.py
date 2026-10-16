@@ -4,6 +4,7 @@ import json
 import time
 import pytest
 from fastapi.testclient import TestClient
+from tests.helpers import sign_in, unauthenticated
 from openpyxl import load_workbook
 from app import source
 
@@ -28,10 +29,10 @@ def test_workflow(tmp_path, monkeypatch):
     monkeypatch.setenv('APP_PASSWORD', 'long-test-password')
     from app import main
     importlib.reload(main)
-    with TestClient(main.app) as client:
+    with TestClient(main.app, base_url='https://testserver') as client:
         assert client.get('/healthz').status_code == 200
         assert client.get('/api/state').status_code == 401
-        client.auth = ('owner', 'long-test-password')
+        sign_in(client)
         assert client.get('/').status_code == 200
         assert client.post('/api/collect', json={}, headers={'Origin': 'https://evil.test'}).status_code == 403
         assert client.post('/api/collect', json={'metro_minutes': 0}).status_code == 422
