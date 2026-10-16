@@ -226,3 +226,16 @@ def test_login_rate_limit_and_logs(multi_app, caplog):
         assert login_attempt(client).status_code == 429
     assert 'long-test-password' not in caplog.text
     assert '$argon2' not in caplog.text
+
+
+def test_successful_login_does_not_reset_shared_failure_budget(multi_app):
+    main, admin = multi_app
+    import time
+    with main.database() as conn:
+        conn.execute('INSERT INTO login_attempts VALUES (?,19,?)', (digest('testclient'), time.time()))
+    with TestClient(main.app, base_url='https://testserver') as client:
+        assert login_attempt(client).status_code == 200
+        with main.database() as conn:
+            assert conn.execute('SELECT failed FROM login_attempts WHERE bucket=?', (digest('testclient'),)).fetchone()[0] == 19
+        assert login_attempt(client, password='incorrect').status_code == 401
+        assert login_attempt(client).status_code == 429

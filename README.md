@@ -143,6 +143,7 @@ mkdir -p backups
 docker compose -p xata stop app
 xata_backup="backups/xata-before-multiuser-$(date -u +%Y%m%dT%H%M%SZ).sqlite3"
 docker compose -p xata cp app:/data/xata.sqlite3 "$xata_backup"
+chmod 600 "$xata_backup"
 docker compose -p xata start app
 ~~~
 

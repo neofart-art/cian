@@ -219,7 +219,8 @@ class AuthStore:
                 current = conn.execute('SELECT * FROM users WHERE id=?', (row['id'],)).fetchone()
                 if not current or not current['enabled'] or current['password_hash'] != row['password_hash']:
                     raise HTTPException(401, 'Неверный логин или пароль')
-                conn.execute('DELETE FROM login_attempts WHERE bucket=?', (bucket,))
+                # This is a per-address failure budget, shared behind NPM.
+                # A valid reviewer login must not reset failed admin-login attempts.
                 conn.execute('DELETE FROM sessions WHERE expires<=? OR token_hash=?',
                              (now, digest(request.cookies.get(COOKIE, ''))))
                 conn.execute('INSERT INTO sessions VALUES (?,?,?,?)', (digest(session), row['id'], csrf, now + SESSION_SECONDS))
