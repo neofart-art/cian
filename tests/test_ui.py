@@ -73,7 +73,9 @@ def test_shared_review_ui_login_roles_refresh_and_layout(tmp_path, monkeypatch):
                 page = await context.new_page()
                 failures = []
                 page.on('pageerror', lambda error: failures.append(str(error)))
-                await page.goto('https://xata.test/')
+                # Redirect behavior is covered by API tests; routed redirects
+                # leave Playwright's offline bridge, so enter the login form directly.
+                await page.goto('https://xata.test/login')
                 await page.wait_for_url('https://xata.test/login')
                 await page.locator('#username').fill('agent')
                 await page.locator('#password').fill('reviewer-password-16')
