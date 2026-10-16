@@ -241,3 +241,79 @@ def test_snapshot_timeout_is_bounded_and_reports_stage(monkeypatch, caplog):
     monkeypatch.setattr(service, 'SNAPSHOT_TIMEOUT_SECONDS', .02)
     asyncio.run(scenario())
     assert 'stage=card_snapshot error_type=TimeoutError' in caplog.text
+
+
+@pytest.mark.parametrize('slow_attempt', [False, True])
+def test_readiness_errors_share_one_deadline(monkeypatch, caplog, slow_attempt):
+    pytest.importorskip('playwright')
+    import asyncio
+    from collector import service
+
+    class Page:
+        async def goto(self, *args, **kwargs):
+            return None
+        def locator(self, _):
+            raise AssertionError('No card reads without successful classification')
+
+    async def scenario():
+        collector = service.Collector(None)
+        collector.page = Page()
+        attempts = 0
+        async def inspect(http_status=200):
+            nonlocal attempts
+            attempts += 1
+            if slow_attempt:
+                await asyncio.sleep(30)
+            raise asyncio.TimeoutError('DO_NOT_LOG https://cian.ru/?secret=PRIVATE <html>PRIVATE</html>')
+        collector.inspect = inspect
+        started = time.monotonic()
+        result = await asyncio.wait_for(collector.collect('https://cian.ru/cat.php'), timeout=2)
+        elapsed = time.monotonic() - started
+        assert .5 <= elapsed < 1.5
+        if slow_attempt:
+            assert attempts == 1
+        else:
+            assert attempts >= 2
+        assert result['status'] == 'error' and result['items'] == []
+        assert result['error'] == service.READINESS_TIMEOUT
+        assert 'TimeoutError' not in result['error']
+        assert not collector.lock.locked()
+    monkeypatch.setattr(service, 'DOM_WAIT_SECONDS', .55)
+    monkeypatch.setattr(service, 'MANUAL', False)
+    caplog.set_level('INFO', logger='xata.browser')
+    asyncio.run(scenario())
+    assert 'readiness deadline exceeded stage=classification_loading' in caplog.text
+    assert 'browser collection error stage=classification_loading' not in caplog.text
+    assert 'PRIVATE' not in caplog.text and 'DO_NOT_LOG' not in caplog.text
+
+
+@pytest.mark.parametrize('attention', ['confirmation_required', 'login_required'])
+def test_readiness_retry_stops_on_confirmation(monkeypatch, attention):
+    pytest.importorskip('playwright')
+    import asyncio
+    from collector import service
+    from playwright.async_api import Error
+
+    class Page:
+        async def goto(self, *args, **kwargs):
+            return None
+        def locator(self, _):
+            raise AssertionError('No card reads after confirmation/login is detected')
+
+    async def scenario():
+        collector = service.Collector(None)
+        collector.page = Page()
+        attempts = 0
+        async def inspect(http_status=200):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise Error('execution context changed')
+            return attention
+        collector.inspect = inspect
+        result = await asyncio.wait_for(collector.collect('https://cian.ru/cat.php'), timeout=1)
+        assert result['status'] == attention and result['items'] == []
+        assert attempts == 2
+        assert not collector.lock.locked()
+    monkeypatch.setattr(service, 'MANUAL', False)
+    asyncio.run(scenario())

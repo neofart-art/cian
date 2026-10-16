@@ -20,10 +20,11 @@ from collector.page import (ATTENTION, AUTH_SELECTOR, CARD_SELECTOR, CHALLENGE_S
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 log = logging.getLogger('xata.browser')
 
-DOM_TIMEOUT_MS = 2000
+DOM_TIMEOUT_MS = 4500
 SNAPSHOT_TIMEOUT_SECONDS = 3
 NAVIGATION_TIMEOUT_MS = 20000
 DOM_WAIT_SECONDS = 8
+READINESS_TIMEOUT = 'Выдача ЦИАН не успела загрузиться за отведённое время. Повторите поиск позже.'
 
 PROFILE = Path(os.getenv('BROWSER_PROFILE_DIR', '/profile'))
 MANUAL = os.getenv('BROWSER_MANUAL_ACCESS', '0') == '1'
@@ -86,21 +87,40 @@ class Collector:
                     return self.result('login_required' if status_code == 401 else 'confirmation_required', items=[])
                 if status_code >= 400:
                     return self.result('error', items=[], error=f'ЦИАН вернул HTTP {status_code}')
-                # Bounded readiness wait, only on this rendered page.
-                deadline = asyncio.get_running_loop().time() + DOM_WAIT_SECONDS
+                # Retry only reads of this page, never navigation or confirmation.
+                # Each attempt shares the same hard deadline, including body.inner_text.
+                loop = asyncio.get_running_loop()
+                deadline = loop.time() + DOM_WAIT_SECONDS
+                attempts = 0
+                readiness_error = READINESS_TIMEOUT
+                stage = 'classification_loading'
                 while True:
-                    stage = 'classification_loading'
-                    status = await self.inspect(status_code)
-                    if status in ('confirmation_required', 'login_required'):
-                        return self.result(status, items=[])
-                    stage = 'waiting_for_cards'
-                    if status == 'authorized' and (
-                            await self.page.locator(CARD_SELECTOR).count() or await self.visible(EMPTY_SELECTOR)):
-                        break
-                    remaining = deadline - asyncio.get_running_loop().time()
+                    remaining = deadline - loop.time()
                     if remaining <= 0:
-                        break
-                    await asyncio.sleep(min(.25, remaining))
+                        log.warning('browser readiness deadline exceeded stage=%s attempts=%d', stage, attempts)
+                        return self.result('error', items=[], error=readiness_error)
+                    attempts += 1
+                    stage = 'classification_loading'
+                    try:
+                        async with asyncio.timeout(remaining):
+                            status = await self.inspect(status_code)
+                            if status in ('confirmation_required', 'login_required'):
+                                return self.result(status, items=[])
+                            stage = 'waiting_for_cards'
+                            ready = status == 'authorized' and (
+                                await self.page.locator(CARD_SELECTOR).count() or await self.visible(EMPTY_SELECTOR))
+                    except (PlaywrightError, asyncio.TimeoutError) as exc:
+                        # Error messages can contain URLs/HTML. Log type/stage only.
+                        log.info('browser DOM still loading stage=%s attempt=%d error_type=%s',
+                                 stage, attempts, type(exc).__name__)
+                        readiness_error = READINESS_TIMEOUT
+                    else:
+                        if ready:
+                            break
+                        readiness_error = UNRECOGNIZED_CARDS if status == 'authorized' else READINESS_TIMEOUT
+                    remaining = deadline - loop.time()
+                    if remaining > 0:
+                        await asyncio.sleep(min(.25, remaining))
                 stage = 'classification_before_snapshot'
                 status = await self.inspect(status_code)
                 if status == 'unknown':

@@ -75,7 +75,7 @@ def test_dom_extraction_challenge_and_persistent_profile(tmp_path):
             # Fast deterministic timeout; unsupported DOM must never succeed empty.
             import collector.service as service
             original_wait = service.DOM_WAIT_SECONDS
-            service.DOM_WAIT_SECONDS = 0
+            service.DOM_WAIT_SECONDS = .5
             try:
                 result = await collector.collect(URL)
             finally:
@@ -223,3 +223,56 @@ def test_snapshot_keeps_100_card_limit_and_skips_bad_dom_node(tmp_path):
             assert {item['id'] for item in result['items']} == {str(index) for index in range(1, 100)}
             await context.close()
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('failure_type,failures', [
+    ('asyncio', 1), ('asyncio', 3), ('playwright_timeout', 2), ('playwright_error', 2),
+])
+def test_loading_classification_retries_then_collects_cards(tmp_path, monkeypatch, caplog, failure_type, failures):
+    """Actual DOM extraction still succeeds after transient body/classification errors."""
+    async def scenario():
+        from playwright.async_api import async_playwright, Locator, TimeoutError as PlaywrightTimeoutError, Error
+        from collector.service import Collector
+        from collector import service
+        original_inner_text = Locator.inner_text
+        attempts = 0
+        navigations = 0
+
+        async def transient_body_read(locator, *args, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts <= failures:
+                message = 'PRIVATE https://cian.ru/?secret=DO_NOT_LOG <html>DO_NOT_LOG</html>'
+                error = {'asyncio': asyncio.TimeoutError,
+                         'playwright_timeout': PlaywrightTimeoutError,
+                         'playwright_error': Error}[failure_type]
+                raise error(message)
+            return await original_inner_text(locator, *args, **kwargs)
+
+        monkeypatch.setattr(Locator, 'inner_text', transient_body_read)
+        async with async_playwright() as playwright:
+            context = await playwright.chromium.launch_persistent_context(str(tmp_path / 'profile'), headless=True)
+            async def fixture(route):
+                nonlocal navigations
+                if route.request.is_navigation_request():
+                    navigations += 1
+                await route.fulfill(status=200, content_type='text/html; charset=utf-8', body=HTML)
+            await context.route('**/*', fixture)
+            collector = Collector(context)
+            collector.page = context.pages[0]
+            started = time.monotonic()
+            result = await asyncio.wait_for(collector.collect(URL), timeout=5)
+            assert time.monotonic() - started < 5
+            assert attempts >= failures + 3  # recovered readiness + both final checks
+            assert navigations == 1  # retry DOM reads, never the navigation
+            assert result['status'] == 'authorized'
+            assert [item['id'] for item in result['items']] == ['123']
+            assert result['items'][0]['price'] == 11950000
+            assert not collector.lock.locked()
+            await context.close()
+    caplog.set_level('INFO', logger='xata.browser')
+    asyncio.run(scenario())
+    assert 'DOM still loading stage=classification_loading' in caplog.text
+    assert 'browser collection error stage=classification_loading' not in caplog.text
+    assert 'matching_card_nodes=2' in caplog.text
+    assert 'PRIVATE' not in caplog.text and 'DO_NOT_LOG' not in caplog.text
