@@ -1,6 +1,7 @@
 """One persistent headed Chromium, serialized jobs, manual challenges only."""
 import asyncio
 import fcntl
+import logging
 import os
 import secrets
 from contextlib import asynccontextmanager
@@ -13,7 +14,16 @@ from playwright.async_api import async_playwright, Error as PlaywrightError
 from app.source_types import SourceError
 
 from collector.page import (ATTENTION, AUTH_SELECTOR, CARD_SELECTOR, CHALLENGE_SELECTOR,
-                            LOGIN_SELECTOR, EXTRACT_CARD, classify, normalize_card, validate_url)
+                            LOGIN_SELECTOR, EMPTY_SELECTOR, VISIBLE_NODES, EXTRACT_CARDS,
+                            UNRECOGNIZED_CARDS, classify, normalize_card, validate_url)
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+log = logging.getLogger('xata.browser')
+
+DOM_TIMEOUT_MS = 2000
+SNAPSHOT_TIMEOUT_SECONDS = 3
+NAVIGATION_TIMEOUT_MS = 20000
+DOM_WAIT_SECONDS = 8
 
 PROFILE = Path(os.getenv('BROWSER_PROFILE_DIR', '/profile'))
 MANUAL = os.getenv('BROWSER_MANUAL_ACCESS', '0') == '1'
@@ -37,20 +47,21 @@ class Collector:
         self.current = 'unknown'
 
     async def visible(self, selector):
-        for node in await self.page.locator(selector).all():
-            if await node.is_visible():
-                return True
-        return False
+        return await asyncio.wait_for(
+            self.page.locator(selector).evaluate_all(VISIBLE_NODES),
+            timeout=SNAPSHOT_TIMEOUT_SECONDS)
 
     async def inspect(self, http_status=200):
-        text = await self.page.locator('body').inner_text(timeout=3000)
-        # An OTP/password form is always a manual action, even alongside old cards.
+        text = await self.page.locator('body').inner_text(timeout=DOM_TIMEOUT_MS)
+        # Snapshot selector matches instead of keeping live nth-locators.
         self.current = classify(
             self.page.url, text,
             challenge=await self.visible(CHALLENGE_SELECTOR),
             login=await self.visible(LOGIN_SELECTOR),
             authorized=await self.visible(AUTH_SELECTOR),
             http_status=http_status)
+        label = {'confirmation_required': 'challenge', 'login_required': 'login'}.get(self.current, self.current)
+        log.info('browser DOM classified as %s', label)
         return self.current
 
     def result(self, status, **kwargs):
@@ -65,52 +76,75 @@ class Collector:
         if MANUAL or self.lock.locked():
             raise HTTPException(409, 'Browser busy or manual access enabled')
         async with self.lock:
+            stage = 'navigation'
             try:
-                response = await self.page.goto(url, wait_until='domcontentloaded', timeout=45000)
+                response = await self.page.goto(
+                    url, wait_until='domcontentloaded', timeout=NAVIGATION_TIMEOUT_MS)
                 status_code = response.status if response else 200
+                log.info('browser navigation completed http_status=%d', status_code)
                 if status_code in (401, 403, 429):
                     return self.result('login_required' if status_code == 401 else 'confirmation_required', items=[])
                 if status_code >= 400:
                     return self.result('error', items=[], error=f'ЦИАН вернул HTTP {status_code}')
-                # Poll only this rendered page; no retries/navigation/challenge solving.
-                for _ in range(60):
+                # Bounded readiness wait, only on this rendered page.
+                deadline = asyncio.get_running_loop().time() + DOM_WAIT_SECONDS
+                while True:
+                    stage = 'classification_loading'
                     status = await self.inspect(status_code)
                     if status in ('confirmation_required', 'login_required'):
                         return self.result(status, items=[])
-                    cards = self.page.locator(CARD_SELECTOR)
-                    if status == 'authorized' and (await cards.count() or await self.visible('[data-name="EmptyOffers"], [data-name="NothingFound"]')):
+                    stage = 'waiting_for_cards'
+                    if status == 'authorized' and (
+                            await self.page.locator(CARD_SELECTOR).count() or await self.visible(EMPTY_SELECTOR)):
                         break
-                    await asyncio.sleep(.5)
+                    remaining = deadline - asyncio.get_running_loop().time()
+                    if remaining <= 0:
+                        break
+                    await asyncio.sleep(min(.25, remaining))
+                stage = 'classification_before_snapshot'
                 status = await self.inspect(status_code)
                 if status == 'unknown':
                     return self.result('error', items=[], error='Не удалось подтвердить авторизацию по DOM. Проверьте меню профиля на OMV.')
                 if status != 'authorized':
                     return self.result(status, items=[])
+
+                stage = 'card_snapshot'
+                snapshot = await asyncio.wait_for(
+                    self.page.locator(CARD_SELECTOR).evaluate_all(EXTRACT_CARDS),
+                    timeout=SNAPSHOT_TIMEOUT_SECONDS)
+                log.info('browser snapshot matching_card_nodes=%d', snapshot['matching'])
                 items = {}
-                for card in (await self.page.locator(CARD_SELECTOR).all())[:100]:
-                    if not await card.is_visible():
+                normalized = 0
+                skipped = snapshot['skipped']
+                stage = 'normalization'
+                for raw in snapshot['cards']:
+                    try:
+                        item = normalize_card(raw)
+                    except (SourceError, ValueError, TypeError, KeyError, AttributeError):
+                        skipped += 1
                         continue
-                    raw = await card.evaluate(EXTRACT_CARD)
-                    # Invalid/missing offer links are unsupported layout, never a successful empty result.
-                    item = normalize_card(raw)
+                    normalized += 1
                     items[item['id']] = item
-                # Abort the whole batch if a challenge appeared during extraction.
+                log.info('browser snapshot normalized_cards=%d unique_cards=%d skipped_cards=%d',
+                         normalized, len(items), skipped)
+                # Challenges still discard the whole batch, including a late challenge.
+                stage = 'classification_after_snapshot'
                 status = await self.inspect(status_code)
                 if status != 'authorized':
                     return self.result(status, items=[])
-                if not items and not await self.visible('[data-name="EmptyOffers"], [data-name="NothingFound"]'):
-                    return self.result('error', items=[], error='Не распознана обычная выдача ЦИАН. Требуется проверка DOM на OMV.')
+                if not items and not (snapshot['empty'] and snapshot['visible'] == 0):
+                    log.warning('browser authorized listing DOM unrecognized')
+                    return self.result('error', items=[], error=UNRECOGNIZED_CARDS)
                 return self.result('authorized', items=list(items.values()))
-            except (PlaywrightError, ValueError, SourceError) as exc:
-                # A navigation timeout may already show a challenge. Inspect once,
-                # without retrying navigation or interacting with the challenge.
+            except (PlaywrightError, asyncio.TimeoutError, ValueError, SourceError) as exc:
+                # Do not log exception messages/tracebacks: Playwright can include URLs/HTML.
+                log.warning('browser collection error stage=%s error_type=%s', stage, type(exc).__name__)
                 try:
                     state = await self.inspect()
                     if state in ('confirmation_required', 'login_required'):
                         return self.result(state, items=[])
-                except PlaywrightError:
-                    pass
-                # No URL, HTML, cookies or login data in error responses/logs.
+                except (PlaywrightError, asyncio.TimeoutError):
+                    log.warning('browser collection error stage=classification_recovery')
                 return self.result('error', items=[], error=f'Не удалось прочитать выдачу ({type(exc).__name__}). Проверьте браузер вручную.')
 
 
@@ -125,6 +159,8 @@ async def lifespan(app):
                 str(PROFILE / 'chromium'), headless=False, viewport={'width': 1280, 'height': 900},
                 # Ordinary Playwright defaults; no stealth, UA or fingerprint overrides.
             )
+            context.set_default_timeout(DOM_TIMEOUT_MS)
+            context.set_default_navigation_timeout(NAVIGATION_TIMEOUT_MS)
             collector = Collector(context)
             collector.page = context.pages[0] if context.pages else await context.new_page()
             for extra in context.pages[1:]:
@@ -171,7 +207,7 @@ async def status():
         state = (collector.current if collector.lock.locked() else
                  'unknown' if collector.page.url == 'about:blank' else await collector.inspect())
         return collector.result(state, running=collector.lock.locked(), manual_access=MANUAL)
-    except PlaywrightError:
+    except (PlaywrightError, asyncio.TimeoutError):
         return collector.result('error', running=collector.lock.locked(), manual_access=MANUAL)
 
 

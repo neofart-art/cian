@@ -5,6 +5,8 @@ from urllib.parse import urlsplit
 from app.csv_source import listing_id, parse_card_text
 
 ATTENTION = 'Требуется ручное подтверждение в браузере'
+UNRECOGNIZED_CARDS = 'Авторизация подтверждена, но карточки выдачи не распознаны'
+EMPTY_SELECTOR = '[data-name="EmptyOffers"], [data-name="NothingFound"]'
 CARD_SELECTOR = '[data-name="CardComponent"], [data-name="OfferCard"]'
 AUTH_SELECTOR = '[data-name="UserAvatar"], [data-name="ProfileMenu"]'
 LOGIN_SELECTOR = 'button:has-text("Войти"), a:has-text("Войти"), input[type="password"], input[autocomplete="one-time-code"]'
@@ -82,5 +84,38 @@ EXTRACT_CARD = r"""el => {
     metro: text('[data-name="UndergroundLabel"]'),
     metro_time: text('[data-name="TimeLabel"]'),
     text: el.innerText
+  };
+}"""
+
+
+# evaluate_all never waits for any individual node. The synchronous JS callback
+# copies only rendered DOM into plain data before React can run another task.
+VISIBLE_NODES = r"""nodes => nodes.some(node => node.isConnected
+    && !!(node.offsetWidth || node.offsetHeight || node.getClientRects().length)
+    && getComputedStyle(node).visibility !== 'hidden')"""
+
+EXTRACT_CARDS = r"""nodes => {
+  const visible = node => node.isConnected
+      && !!(node.offsetWidth || node.offsetHeight || node.getClientRects().length)
+      && getComputedStyle(node).visibility !== 'hidden';
+  const extract = """ + EXTRACT_CARD + r""";
+  const cards = [];
+  let visibleCount = 0, skipped = 0;
+  for (const node of nodes.slice(0, 100)) {
+    try {
+      if (!visible(node)) {
+        skipped += 1;
+        continue;
+      }
+      visibleCount += 1;
+      cards.push(extract(node));
+    } catch (_) {
+      // A malformed/detached card must not discard the other cards.
+      skipped += 1;
+    }
+  }
+  return {
+    matching: nodes.length, visible: visibleCount, skipped, cards,
+    empty: [...document.querySelectorAll('[data-name="EmptyOffers"], [data-name="NothingFound"]')].some(visible)
   };
 }"""

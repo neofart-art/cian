@@ -184,7 +184,7 @@ def test_browser_api_auth_and_manual_mode(monkeypatch):
     assert client.post('/collect', json={'url': 'https://cian.ru/cat.php'}).status_code == 409
 
 
-def test_navigation_timeout_with_visible_challenge(monkeypatch):
+def test_navigation_timeout_with_visible_challenge(monkeypatch, caplog):
     pytest.importorskip('playwright')
     import asyncio
     from collector import service
@@ -192,7 +192,7 @@ def test_navigation_timeout_with_visible_challenge(monkeypatch):
 
     class Page:
         async def goto(self, *args, **kwargs):
-            raise Error('navigation timed out')
+            raise Error('navigation timed out https://cian.ru/?secret=DO_NOT_LOG <html>PRIVATE</html>')
 
     async def scenario():
         collector = service.Collector(None)
@@ -207,3 +207,37 @@ def test_navigation_timeout_with_visible_challenge(monkeypatch):
         assert not collector.lock.locked()
     monkeypatch.setattr(service, 'MANUAL', False)
     asyncio.run(scenario())
+    assert 'stage=navigation error_type=Error' in caplog.text
+    assert 'DO_NOT_LOG' not in caplog.text and 'PRIVATE' not in caplog.text
+
+
+def test_snapshot_timeout_is_bounded_and_reports_stage(monkeypatch, caplog):
+    pytest.importorskip('playwright')
+    import asyncio
+    from collector import service
+
+    class Cards:
+        async def count(self):
+            return 1
+        async def evaluate_all(self, expression):
+            await asyncio.sleep(30)
+
+    class Page:
+        async def goto(self, *args, **kwargs):
+            return None
+        def locator(self, selector):
+            return Cards()
+
+    async def scenario():
+        collector = service.Collector(None)
+        collector.page = Page()
+        async def inspect(http_status=200):
+            return 'authorized'
+        collector.inspect = inspect
+        result = await asyncio.wait_for(collector.collect('https://cian.ru/cat.php'), timeout=1)
+        assert result['status'] == 'error' and result['items'] == []
+        assert not collector.lock.locked()
+    monkeypatch.setattr(service, 'MANUAL', False)
+    monkeypatch.setattr(service, 'SNAPSHOT_TIMEOUT_SECONDS', .02)
+    asyncio.run(scenario())
+    assert 'stage=card_snapshot error_type=TimeoutError' in caplog.text
