@@ -219,14 +219,14 @@ def test_snapshot_timeout_is_bounded_and_reports_stage(monkeypatch, caplog):
     class Cards:
         async def count(self):
             return 1
-        async def evaluate_all(self, expression):
-            await asyncio.sleep(30)
 
     class Page:
         async def goto(self, *args, **kwargs):
             return None
         def locator(self, selector):
             return Cards()
+        async def evaluate(self, expression):
+            await asyncio.sleep(30)
 
     async def scenario():
         collector = service.Collector(None)

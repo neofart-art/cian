@@ -14,7 +14,7 @@ from playwright.async_api import async_playwright, Error as PlaywrightError
 from app.source_types import SourceError
 
 from collector.page import (ATTENTION, AUTH_SELECTOR, CARD_SELECTOR, CHALLENGE_SELECTOR,
-                            LOGIN_SELECTOR, EMPTY_SELECTOR, VISIBLE_NODES, EXTRACT_CARDS,
+                            LOGIN_SELECTOR, EMPTY_SELECTOR, VISIBLE_NODES, CARD_SNAPSHOT,
                             UNRECOGNIZED_CARDS, classify, normalize_card, validate_url)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
@@ -130,7 +130,7 @@ class Collector:
 
                 stage = 'card_snapshot'
                 snapshot = await asyncio.wait_for(
-                    self.page.locator(CARD_SELECTOR).evaluate_all(EXTRACT_CARDS),
+                    self.page.evaluate(CARD_SNAPSHOT),
                     timeout=SNAPSHOT_TIMEOUT_SECONDS)
                 log.info('browser snapshot matching_card_nodes=%d', snapshot['matching'])
                 items = {}

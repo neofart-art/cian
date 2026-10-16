@@ -1,4 +1,5 @@
 """Only rendered user-facing DOM. No embedded state, API, tokens or cookies."""
+import json
 import re
 from urllib.parse import urlsplit
 
@@ -119,3 +120,9 @@ EXTRACT_CARDS = r"""nodes => {
     empty: [...document.querySelectorAll('[data-name="EmptyOffers"], [data-name="NothingFound"]')].some(visible)
   };
 }"""
+
+
+# Query and copy within the same JS task. evaluate_all may resolve its node
+# array before the callback runs, allowing React to detach all resolved nodes.
+CARD_SNAPSHOT = ('() => (' + EXTRACT_CARDS + ')([...document.querySelectorAll('
+                 + json.dumps(CARD_SELECTOR) + ')])')
