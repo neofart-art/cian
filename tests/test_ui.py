@@ -109,7 +109,7 @@ def test_shared_review_ui_login_roles_refresh_and_layout(tmp_path, monkeypatch):
                 await page.evaluate('refresh()')
                 assert stale_injected == 1
                 await expect(row.locator('.review-label')).to_have_text('Просмотрено')
-                assert await row.locator('details').evaluate('el => el.open')
+                assert await row.locator('.object-cell details').evaluate('el => el.open')
                 assert await page.evaluate('window.savedRow === document.querySelector(\'tr[data-listing-id="123"]\')')
                 before = state_reads
                 await page.locator('[data-review-filter="new"]').click()
@@ -117,9 +117,9 @@ def test_shared_review_ui_login_roles_refresh_and_layout(tmp_path, monkeypatch):
                 await page.locator('[data-review-filter="all"]').click()
                 assert await row.is_visible()
                 assert state_reads == before
-                await row.locator('select').select_option('rejected')
+                await row.locator('.review-select').select_option('rejected')
                 await expect(row.locator('.review-label')).to_have_text('Не подходит')
-                await row.locator('select').select_option('new')
+                await row.locator('.review-select').select_option('new')
                 await expect(row.locator('.review-label')).to_have_text('НОВОЕ')
                 await page.locator('#logout').click()
                 await page.wait_for_url('https://xata.test/login')
