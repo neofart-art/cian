@@ -3,7 +3,7 @@ import json
 import re
 from urllib.parse import urlsplit
 
-from app.csv_source import listing_id, parse_card_text
+from app.csv_source import listing_id, parse_card_text, travel_duration
 
 ATTENTION = 'Требуется ручное подтверждение в браузере'
 UNRECOGNIZED_CARDS = 'Авторизация подтверждена, но карточки выдачи не распознаны'
@@ -61,9 +61,12 @@ def normalize_card(card):
     area = re.search(r'(\d+(?:[,.]\d+)?)\s*м[²2]', title or text)
     if area:
         item['area'] = float(area[1].replace(',', '.'))
-    for field in ('address', 'complex_name', 'metro', 'metro_time'):
+    for field in ('address', 'complex_name', 'metro'):
         if card.get(field):
             item[field] = card[field][:10000]
+    duration = travel_duration(card.get('metro_time'))
+    if duration:
+        item.update(duration)
     return item
 
 

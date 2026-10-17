@@ -30,9 +30,11 @@ def test_shared_review_ui_login_roles_refresh_and_layout(tmp_path, monkeypatch):
             for key in ('123','456','999')
         ], '2026-10-16T10:00:00+00:00')
 
+    main.update_browser(last_success='2026-10-16T12:24:00+00:00',last_error='PRIVATE_BROWSER_ERROR')
     with TestClient(main.app, base_url='https://xata.test') as client:
         sign_in(client)
         assert client.post('/api/users', json={'username':'agent','display_name':'Риелтор','password':'reviewer-password-16','role':'reviewer'}).status_code == 201
+        assert client.post('/api/users', json={'username':'expert','display_name':'Эксперт','password':'12345678','role':'realtor'}).status_code == 201
         assert client.post('/api/auth/logout').status_code == 200
 
         async def scenario():
@@ -85,18 +87,22 @@ def test_shared_review_ui_login_roles_refresh_and_layout(tmp_path, monkeypatch):
                 await expect(page.locator('#identity')).to_contain_text('Риелтор')
                 assert await page.locator('[data-admin]:visible').count() == 0
                 assert await page.locator('#listing-table th').all_text_contents() == [
-                    '№ ЦИАН','ЖК / адрес','Цена','Площадь','Этаж','Метро','До метро','Впервые найдено','Статус']
+                    '№ ЦИАН','ЖК / адрес','Цена','Ипотека / мес.','Площадь','Этаж','Метро','До метро','Добавлено','Статус','Риелтор']
                 assert await page.locator('.table-wrap').evaluate('el => el.scrollWidth <= el.clientWidth')
                 assert await page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+                await expect(page.locator('#last-sync')).to_contain_text('16.10.2026')
+                assert await page.locator('#price,#metro').count() == 0
+                await expect(page.locator('#criteria-price')).to_have_text('Бюджет до 14,5 млн ₽')
+                await expect(page.locator('#criteria-metro')).to_contain_text('20 минут')
                 row = page.locator('tr[data-listing-id="123"]')
                 link = row.locator('td').nth(0).locator('a')
                 assert await link.text_content() == '123'
                 assert await link.get_attribute('target') == '_blank'
                 assert await link.get_attribute('rel') == 'noopener noreferrer'
                 stale_state = client.get('/api/state').json()
-                await row.locator('details').evaluate('el => {el.open=true}')
+                await row.locator('.object-cell details').evaluate('el => {el.open=true}')
                 await page.evaluate('window.savedRow = document.querySelector(\'tr[data-listing-id="123"]\')')
-                await row.locator('select').select_option('viewed')
+                await row.locator('.review-select').select_option('viewed')
                 await expect(row.locator('.review-label')).to_have_text('Просмотрено')
                 await expect(row.locator('.review-meta')).to_contain_text('Риелтор')
                 inject_stale = True
@@ -117,18 +123,50 @@ def test_shared_review_ui_login_roles_refresh_and_layout(tmp_path, monkeypatch):
                 await expect(row.locator('.review-label')).to_have_text('НОВОЕ')
                 await page.locator('#logout').click()
                 await page.wait_for_url('https://xata.test/login')
+                await page.locator('#username').fill('expert')
+                await page.locator('#password').fill('12345678')
+                await page.locator('#login-submit').click()
+                await page.wait_for_url('https://xata.test/')
+                await expect(page.locator('#identity')).to_contain_text('Эксперт · Риелтор')
+                await expect(page.locator('#listings tr')).to_have_count(3)
+                row = page.locator('tr[data-listing-id="123"]')
+                await expect(row.locator('.review-select')).to_be_hidden()
+                assert await page.locator('[data-admin]:visible').count() == 0
+                stale_state = client.get('/api/state').json()
+                await row.locator('.realtor-editor > summary').click()
+                await row.locator('.realtor-select').select_option('rejected')
+                comment = '<img src=x onerror=alert(1)> Плохой подъезд\nДокументы?'
+                await row.locator('.realtor-comment').fill(comment)
+                await page.evaluate('refresh()')
+                await expect(row.locator('.realtor-comment')).to_have_value(comment)
+                await row.locator('.realtor-editor button').click()
+                await expect(row.locator('.realtor-label')).to_have_text('Отбраковано')
+                await expect(row.locator('.realtor-meta')).to_contain_text('Эксперт')
+                await row.locator('.realtor-details > summary').click()
+                await expect(row.locator('.comment-text')).to_have_text(comment)
+                assert await row.locator('img').count() == 0
+                inject_stale = True
+                await page.evaluate('refresh()')
+                await expect(row.locator('.realtor-label')).to_have_text('Отбраковано')
+                await expect(row.locator('.realtor-comment')).to_have_value(comment)
+                await page.locator('#logout').click()
+                await page.wait_for_url('https://xata.test/login')
                 await page.locator('#username').fill('owner')
                 await page.locator('#password').fill('long-test-password')
                 await page.locator('#login-submit').click()
                 await page.wait_for_url('https://xata.test/')
                 await expect(page.locator('.export')).to_be_visible()
                 await page.locator('#users-panel > summary').click()
-                await expect(page.locator('#users-list .user-editor')).to_have_count(2)
+                await expect(page.locator('#users-list .user-editor')).to_have_count(3)
                 await page.locator('#new-username').fill('anna')
                 await page.locator('#new-name').fill('Анна')
-                await page.locator('#new-password').fill('anna-password-12345')
+                assert await page.locator('#new-password').get_attribute('minlength') == '8'
+                await page.locator('#new-role').select_option('admin')
+                assert await page.locator('#new-password').get_attribute('minlength') == '12'
+                await page.locator('#new-role').select_option('reviewer')
+                await page.locator('#new-password').fill('12345678')
                 await page.locator('#user-create button').click()
-                await expect(page.locator('#users-list .user-editor')).to_have_count(3)
+                await expect(page.locator('#users-list .user-editor')).to_have_count(4)
                 await page.locator('.admin-tools > summary').click()
                 await page.locator('#csv-file').set_input_files({
                     'name':'favorites.csv','mimeType':'text/csv',

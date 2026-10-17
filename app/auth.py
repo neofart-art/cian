@@ -13,6 +13,7 @@ from argon2 import PasswordHasher, Type
 from argon2.exceptions import VerificationError, InvalidHashError
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
+from app.migrations import migrate_user_roles
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 log = logging.getLogger('xata')
@@ -50,8 +51,8 @@ class CreateUser(BaseModel):
     model_config = ConfigDict(extra='forbid')
     username: str = Field(min_length=1, max_length=128)
     display_name: str = Field(min_length=1, max_length=80)
-    password: str = Field(min_length=12, max_length=1024)
-    role: Literal['admin', 'reviewer'] = 'reviewer'
+    password: str = Field(min_length=8, max_length=1024)
+    role: Literal['admin', 'reviewer', 'realtor'] = 'reviewer'
     enabled: bool = True
 
     @field_validator('username')
@@ -71,8 +72,8 @@ class UpdateUser(BaseModel):
     model_config = ConfigDict(extra='forbid')
     username: str | None = Field(default=None, min_length=1, max_length=128)
     display_name: str | None = Field(default=None, min_length=1, max_length=80)
-    password: str | None = Field(default=None, min_length=12, max_length=1024)
-    role: Literal['admin', 'reviewer'] | None = None
+    password: str | None = Field(default=None, min_length=8, max_length=1024)
+    role: Literal['admin', 'reviewer', 'realtor'] | None = None
     enabled: bool | None = None
 
     @field_validator('username')
@@ -98,7 +99,7 @@ class AuthStore:
                 CREATE TABLE IF NOT EXISTS users (
                     id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE COLLATE NOCASE,
                     display_name TEXT NOT NULL, password_hash TEXT NOT NULL,
-                    role TEXT NOT NULL CHECK(role IN ('admin','reviewer')),
+                    role TEXT NOT NULL CHECK(role IN ('admin','reviewer','realtor')),
                     enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
                     created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS sessions (
@@ -110,6 +111,8 @@ class AuthStore:
                 CREATE TABLE IF NOT EXISTS login_attempts (
                     bucket TEXT PRIMARY KEY, failed INTEGER NOT NULL, started REAL NOT NULL);
             ''')
+        migrate_user_roles(self.database)
+        with self.database() as conn:
             conn.execute('BEGIN IMMEDIATE')
             if conn.execute('SELECT count(*) FROM users').fetchone()[0]:
                 return
@@ -122,8 +125,8 @@ class AuthStore:
                 log.warning('Bootstrap requires APP_USER and APP_PASSWORD of at least 16 characters')
                 return
             timestamp = now_iso()
-            conn.execute('INSERT INTO users(username,display_name,password_hash,role,created_at,updated_at) VALUES (?,?,?,?,?,?)',
-                         (login, os.getenv('APP_USER', '').strip()[:80], HASHER.hash(password), 'admin', timestamp, timestamp))
+            conn.execute('INSERT INTO users(username,display_name,password_hash,role,created_at,updated_at,password_length) VALUES (?,?,?,?,?,?,?)',
+                         (login, os.getenv('APP_USER', '').strip()[:80], HASHER.hash(password), 'admin', timestamp, timestamp, min(12, len(password))))
             log.info('Admin bootstrap complete')
 
     def principal(self, request):
@@ -252,12 +255,14 @@ class AuthStore:
         @router.post('/api/users', status_code=201)
         def create(data: CreateUser, actor=Depends(admin)):
             timestamp = now_iso()
+            if len(data.password) < (12 if data.role == 'admin' else 8):
+                raise HTTPException(422, 'Пароль администратора должен содержать минимум 12 символов')
             password_hash = HASHER.hash(data.password)
             try:
                 with self.database() as conn:
-                    cursor = conn.execute('''INSERT INTO users(username,display_name,password_hash,role,enabled,created_at,updated_at)
-                                             VALUES (?,?,?,?,?,?,?)''',
-                                          (data.username, data.display_name, password_hash, data.role, data.enabled, timestamp, timestamp))
+                    cursor = conn.execute('''INSERT INTO users(username,display_name,password_hash,role,enabled,created_at,updated_at,password_length)
+                                             VALUES (?,?,?,?,?,?,?,?)''',
+                                          (data.username, data.display_name, password_hash, data.role, data.enabled, timestamp, timestamp, min(12, len(data.password))))
                     user = dict(conn.execute('SELECT ' + USER_COLUMNS + ' FROM users WHERE id=?', (cursor.lastrowid,)).fetchone())
             except sqlite3.IntegrityError as exc:
                 raise HTTPException(409, 'Такой логин уже существует') from exc
@@ -267,14 +272,21 @@ class AuthStore:
         @router.patch('/api/users/{user_id}')
         def update(user_id: int, data: UpdateUser, actor=Depends(admin)):
             changes = data.model_dump(exclude_none=True)
-            if 'password' in changes:
-                changes['password_hash'] = HASHER.hash(changes.pop('password'))
+            password = changes.pop('password', None)
+            if password is not None:
+                changes['password_hash'] = HASHER.hash(password)
+                changes['password_length'] = min(12, len(password))
             try:
                 with self.database() as conn:
                     conn.execute('BEGIN IMMEDIATE')
                     old = conn.execute('SELECT * FROM users WHERE id=?', (user_id,)).fetchone()
                     if not old:
                         raise HTTPException(404, 'Пользователь не найден')
+                    effective_role = changes.get('role', old['role'])
+                    if password is not None and len(password) < (12 if effective_role == 'admin' else 8):
+                        raise HTTPException(422, 'Пароль администратора должен содержать минимум 12 символов')
+                    if effective_role == 'admin' and old['role'] != 'admin' and (changes.get('password_length', old['password_length']) or 0) < 12:
+                        raise HTTPException(422, 'Для повышения роли задайте в этом действии новый пароль администратора от 12 символов')
                     remains_admin = changes.get('role', old['role']) == 'admin' and changes.get('enabled', old['enabled'])
                     if old['role'] == 'admin' and old['enabled'] and not remains_admin:
                         count = conn.execute("SELECT count(*) FROM users WHERE role='admin' AND enabled=1").fetchone()[0]

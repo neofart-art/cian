@@ -1,7 +1,9 @@
 import io
+import hashlib
 import json
 import logging
 import os
+import re
 import secrets
 import sqlite3
 import threading
@@ -10,14 +12,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, Response, RedirectResponse, JSONResponse
+from fastapi.responses import FileResponse, Response, RedirectResponse, JSONResponse, HTMLResponse
 from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 from openpyxl import Workbook
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 from typing import Literal
 from app.auth import AuthStore, UNSAFE
+from app.migrations import migrate_listings
+from app.criteria import browser_criteria
+from app.finance import mortgage_payment
 from app import source
 from app.csv_source import CianCsvSource, MAX_BYTES
 from app.browser_source import CianBrowserSource, BrowserAttention
@@ -82,7 +87,7 @@ admin = security.admin_dependency()
 with database() as conn:
     columns = {row['name'] for row in conn.execute('PRAGMA table_info(listings)')}
     for name, kind in {
-        'review_status': "TEXT NOT NULL DEFAULT 'new' CHECK(review_status IN ('new','viewed','rejected'))",
+        'review_status': "TEXT NOT NULL DEFAULT 'new' CHECK(review_status IN ('new','liked','viewed','rejected'))",
         'review_updated_at': 'TEXT',
         'review_updated_by': 'INTEGER REFERENCES users(id)',
         'review_version': 'INTEGER NOT NULL DEFAULT 0',
@@ -92,9 +97,19 @@ with database() as conn:
     conn.execute("""CREATE INDEX IF NOT EXISTS listings_review_order ON listings(
         CASE review_status WHEN 'new' THEN 0 WHEN 'viewed' THEN 1 ELSE 2 END,first_seen DESC,id)""")
 
-LISTING_QUERY = '''SELECT l.*,u.display_name AS review_updated_by_name,u.username AS review_updated_by_username
-                   FROM listings l LEFT JOIN users u ON u.id=l.review_updated_by'''
-LISTING_ORDER = " ORDER BY CASE l.review_status WHEN 'new' THEN 0 WHEN 'viewed' THEN 1 ELSE 2 END,l.first_seen DESC,l.id"
+migrate_listings(database)
+
+LISTING_QUERY = '''SELECT l.*,u.display_name AS review_updated_by_name,u.username AS review_updated_by_username,
+                          r.display_name AS realtor_updated_by_name,r.username AS realtor_updated_by_username
+                   FROM listings l LEFT JOIN users u ON u.id=l.review_updated_by
+                   LEFT JOIN users r ON r.id=l.realtor_updated_by'''
+LISTING_ORDER = " ORDER BY CASE l.review_status WHEN 'new' THEN 0 WHEN 'liked' THEN 1 WHEN 'viewed' THEN 2 ELSE 3 END,l.first_seen DESC,l.id"
+
+
+def listing_data(row):
+    item = dict(row)
+    item['mortgage_payment'] = mortgage_payment(item['price'])
+    return item
 
 
 def browser_state():
@@ -184,22 +199,36 @@ async def protect_origin(request, call_next):
     response.headers['Referrer-Policy'] = 'same-origin'
     if request.url.path in ('/', '/login') or request.url.path.startswith('/api/'):
         response.headers['Cache-Control'] = 'no-store'
+    elif request.url.path.startswith('/static/'):
+        response.headers['Cache-Control'] = 'no-cache, must-revalidate'
     response.headers['Content-Security-Policy'] = "default-src 'self'; style-src 'self'; script-src 'self'; frame-ancestors 'none'; base-uri 'self'"
     return response
+
+
+STATIC = Path(__file__).parent / 'static'
+ASSET_VERSIONS = {name: hashlib.sha256((STATIC / name).read_bytes()).hexdigest()[:16]
+                  for name in ('app.js', 'review-state.js', 'login.js', 'style.css')}
+
+
+def html_document(name):
+    document = (STATIC / name).read_text(encoding='utf-8')
+    for asset, version in ASSET_VERSIONS.items():
+        document = document.replace('/static/' + asset + '"', '/static/' + asset + '?v=' + version + '"')
+    return HTMLResponse(document)
 
 
 @app.get('/')
 def index(request: Request):
     if not security.principal(request):
         return RedirectResponse('/login', status_code=303)
-    return FileResponse(Path(__file__).parent / 'static/index.html')
+    return html_document('index.html')
 
 
 @app.get('/login')
 def login_page(request: Request):
     if security.principal(request):
         return RedirectResponse('/', status_code=303)
-    return FileResponse(Path(__file__).parent / 'static/login.html')
+    return html_document('login.html')
 
 
 @app.get('/api/state')
@@ -207,20 +236,23 @@ def state(user=Depends(auth)):
     with database() as conn:
         # Read listings and their run from one SQLite snapshot.
         conn.execute('BEGIN')
-        listings = [dict(row) for row in conn.execute(LISTING_QUERY + LISTING_ORDER)]
+        listings = [listing_data(row) for row in conn.execute(LISTING_QUERY + LISTING_ORDER)]
         run = conn.execute('SELECT * FROM runs ORDER BY id DESC LIMIT 1').fetchone()
-    result = {'listings': listings, 'user': user}
+    saved_browser = browser_state()
+    result = {'listings': listings, 'user': user, 'last_success': saved_browser.get('last_success'), 'criteria': browser_criteria()}
     if user['role'] == 'admin':
-        result.update(run=dict(run) if run else None, browser=browser_state())
+        result.update(run=dict(run) if run else None, browser=saved_browser)
     return result
 
 
 class Review(BaseModel):
-    status: Literal['new', 'viewed', 'rejected']
+    status: Literal['new', 'liked', 'viewed', 'rejected']
 
 
 @app.post('/api/listings/{listing_id}/review')
 def review_listing(listing_id: str, data: Review, user=Depends(auth)):
+    if user['role'] not in ('admin', 'reviewer'):
+        raise HTTPException(403, 'Общий статус доступен только семье и администратору')
     timestamp = datetime.now(timezone.utc).isoformat()
     with database() as conn:
         conn.execute('BEGIN IMMEDIATE')
@@ -229,8 +261,38 @@ def review_listing(listing_id: str, data: Review, user=Depends(auth)):
                               (data.status, timestamp, user['id'], listing_id))
         if not cursor.rowcount:
             raise HTTPException(404, 'Объявление не найдено')
-        item = dict(conn.execute(LISTING_QUERY + ' WHERE l.id=?', (listing_id,)).fetchone())
+        item = listing_data(conn.execute(LISTING_QUERY + ' WHERE l.id=?', (listing_id,)).fetchone())
     log.info('Review changed user_id=%s listing_id=%s', user['id'], listing_id)
+    return item
+
+
+class RealtorReview(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    status: Literal['pending', 'approved', 'rejected']
+    comment: str = Field(default='', max_length=2000)
+
+    @field_validator('comment')
+    @classmethod
+    def plain_text(cls, value):
+        if re.search(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', value):
+            raise ValueError('Комментарий содержит недопустимые управляющие символы')
+        return value
+
+
+@app.post('/api/listings/{listing_id}/realtor-review')
+def realtor_review(listing_id: str, data: RealtorReview, user=Depends(auth)):
+    if user['role'] not in ('admin', 'realtor'):
+        raise HTTPException(403, 'Оценка доступна только риелтору и администратору')
+    timestamp = datetime.now(timezone.utc).isoformat()
+    with database() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        cursor = conn.execute('''UPDATE listings SET realtor_status=?,realtor_comment=?,realtor_updated_at=?,
+                                 realtor_updated_by=?,realtor_version=realtor_version+1 WHERE id=?''',
+                              (data.status, data.comment, timestamp, user['id'], listing_id))
+        if not cursor.rowcount:
+            raise HTTPException(404, 'Объявление не найдено')
+        item = listing_data(conn.execute(LISTING_QUERY + ' WHERE l.id=?', (listing_id,)).fetchone())
+    log.info('Realtor review changed user_id=%s listing_id=%s', user['id'], listing_id)
     return item
 
 
@@ -297,6 +359,8 @@ def live_browser_status():
 
 
 def start_browser(filters):
+    # Ignore historical run/client values; search URL is the server authority.
+    filters = Filters(**browser_criteria())
     if not lock.acquire(blocking=False):
         raise HTTPException(409, 'Сбор уже выполняется')
     try:
@@ -315,9 +379,13 @@ def start_browser(filters):
     return {'id': run_id}
 
 
+class BrowserRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+
 @app.post('/api/browser/collect', status_code=202, dependencies=[Depends(admin)])
-def collect_browser(filters: Filters):
-    return start_browser(filters)
+def collect_browser(data: BrowserRequest = BrowserRequest()):
+    return start_browser(Filters(**browser_criteria()))
 
 
 def schedule_interval():
@@ -342,7 +410,7 @@ def scheduler_tick():
             previous = conn.execute("SELECT started,filters FROM runs WHERE source='browser' ORDER BY id DESC LIMIT 1").fetchone()
         if previous and (datetime.now(timezone.utc) - datetime.fromisoformat(previous['started'])).total_seconds() < schedule_interval():
             return
-        filters = Filters.model_validate_json(previous['filters']) if previous else Filters()
+        filters = Filters(**browser_criteria())
         start_browser(filters)
     except HTTPException as exc:
         if exc.status_code not in (409, 429):
@@ -426,10 +494,10 @@ def export():
     book = Workbook()
     sheet = book.active
     sheet.title = 'Объявления'
-    sheet.append(['ID', 'Название', 'Цена, ₽', 'Адрес', 'Ссылка', 'Впервые найдено (UTC)', 'Последнее обновление (UTC)', 'ЖК', 'Площадь, м²', 'Этаж', 'Метро', 'Время до метро', 'Источник', 'Последний импорт (UTC)', 'Текст карточки', 'Описание', 'Пешком до метро, мин', 'Статус', 'Статус изменил', 'Дата изменения статуса (UTC)'])
+    sheet.append(['ID', 'Название', 'Цена, ₽', 'Адрес', 'Ссылка', 'Впервые найдено (UTC)', 'Последнее обновление (UTC)', 'ЖК', 'Площадь, м²', 'Этаж', 'Метро', 'Время до метро', 'Источник', 'Последний импорт (UTC)', 'Текст карточки', 'Описание', 'Пешком до метро, мин', 'Статус', 'Статус изменил', 'Дата изменения статуса (UTC)', 'Оценка риелтора', 'Комментарий риелтора', 'Риелторскую оценку изменил', 'Дата риелторской оценки (UTC)', 'Ипотека / мес. (6 млн / 18% / 15 лет)'])
     with database() as conn:
-        for row in conn.execute('''SELECT l.id,l.title,l.price,l.address,l.url,l.first_seen,l.last_seen,l.complex_name,l.area,l.floor,l.metro,l.metro_time,l.source,l.last_imported,l.card_text,l.description,l.metro_walk_minutes,l.review_status,u.display_name,l.review_updated_at FROM listings l LEFT JOIN users u ON u.id=l.review_updated_by ORDER BY l.price'''):
-            sheet.append([("'" + value if isinstance(value, str) and value.startswith(('=', '+', '-', '@')) else value) for value in row])
+        for row in conn.execute('''SELECT l.id,l.title,l.price,l.address,l.url,l.first_seen,l.last_seen,l.complex_name,l.area,l.floor,l.metro,l.metro_time,l.source,l.last_imported,l.card_text,l.description,l.metro_walk_minutes,l.review_status,u.display_name,l.review_updated_at,l.realtor_status,l.realtor_comment,r.display_name,l.realtor_updated_at FROM listings l LEFT JOIN users u ON u.id=l.review_updated_by LEFT JOIN users r ON r.id=l.realtor_updated_by ORDER BY l.price'''):
+            sheet.append([("'" + value if isinstance(value, str) and value.startswith(('=', '+', '-', '@')) else value) for value in (*row, mortgage_payment(row['price']))])
     sheet.freeze_panes = 'A2'
     sheet.auto_filter.ref = sheet.dimensions
     stream = io.BytesIO()

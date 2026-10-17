@@ -131,7 +131,7 @@ def test_roles_and_administrative_api_enforcement(multi_app, monkeypatch):
     assert reviewer.get('/api/users').status_code == 403
 
 
-@pytest.mark.parametrize('status', ['new','viewed','rejected'])
+@pytest.mark.parametrize('status', ['new','liked','viewed','rejected'])
 def test_reviewer_status_author_and_time(multi_app, status):
     main, admin = multi_app
     user, reviewer = reviewer_client(main, admin)
@@ -172,9 +172,9 @@ def test_browser_csv_refresh_keeps_review_and_xlsx_history(multi_app):
     assert state[0]['review_status'] == 'new' and state[0]['review_updated_by'] is None
     book = load_workbook(io.BytesIO(admin.get('/api/export.xlsx').content))
     rows = list(book.active.values)
-    assert rows[0][-3:] == ('Статус','Статус изменил','Дата изменения статуса (UTC)')
+    assert rows[0][17:20] == ('Статус','Статус изменил','Дата изменения статуса (UTC)')
     saved = next(row for row in rows[1:] if row[0] == '123')
-    assert saved[-3:] == ('rejected', "'=Имя после переименования", review['review_updated_at'])
+    assert saved[17:20] == ('rejected', "'=Имя после переименования", review['review_updated_at'])
 
 
 def test_disabling_password_reset_and_last_active_admin(multi_app):
@@ -194,8 +194,8 @@ def test_disabling_password_reset_and_last_active_admin(multi_app):
     sign_in(reviewer, 'agent', 'new-reviewer-password')
     assert reviewer.get('/api/state').status_code == 200
     assert admin.post('/api/users', json={'username':'OWNER','display_name':'Duplicate','password':'valid-password-16'}).status_code == 409
-    response = admin.post('/api/users', json={'username':'weak','display_name':'Weak','password':'DO_NOT_ECHO'})
-    assert response.status_code == 422 and 'DO_NOT_ECHO' not in response.text
+    response = admin.post('/api/users', json={'username':'weak','display_name':'Weak','password':'SECRET7'})
+    assert response.status_code == 422 and 'SECRET7' not in response.text
     assert admin.patch(path, json={'password_hash':'evil'}).status_code == 422
 
 

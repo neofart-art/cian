@@ -3,8 +3,10 @@ const form = document.querySelector('#filters');
 const button = document.querySelector('#collect');
 const status = document.querySelector('#status');
 const message = document.querySelector('#page-message');
-const records = new Map(), rows = new Map(), pendingReviews = new Set();
-const labels = {new:'НОВОЕ', viewed:'Просмотрено', rejected:'Не подходит'};
+const records = new Map(), rows = new Map(), pendingReviews = new Set(), pendingRealtors = new Set();
+const labels = {new:'НОВОЕ', liked:'Понравилось', viewed:'Просмотрено', rejected:'Не подходит'};
+const realtorLabels = {pending:'Не оценено',approved:'Одобрено',rejected:'Отбраковано'};
+let selectedSort = null;
 let currentUser = null, csrfToken = '', pending = false, refreshing = false, selectedFilter = 'all';
 
 function setText(node, value) {
@@ -13,7 +15,7 @@ function setText(node, value) {
 }
 function identify(user) {
   currentUser = user;
-  setText(document.querySelector('#identity'), user.display_name + ' · ' + (user.role === 'admin' ? 'Администратор' : 'Просмотр'));
+  setText(document.querySelector('#identity'), user.display_name + ' · ' + ({admin:'Администратор',reviewer:'Просмотр',realtor:'Риелтор'}[user.role]));
   for (const node of document.querySelectorAll('[data-admin]')) node.hidden = user.role !== 'admin';
 }
 async function apiFetch(url, options = {}) {
@@ -41,7 +43,7 @@ function safeCianUrl(value) {
 function makeRow(id) {
   const row = document.createElement('tr');
   row.dataset.listingId = id;
-  const cells = Array.from({length:9}, () => cell(row));
+  const cells = Array.from({length:11}, () => cell(row));
   const link = document.createElement('a');
   link.target = '_blank'; link.rel = 'noopener noreferrer';
   cells[0].append(link);
@@ -50,7 +52,7 @@ function makeRow(id) {
   const details = document.createElement('details'), summary = document.createElement('summary'), text = document.createElement('p');
   summary.textContent = 'Текст карточки / описание'; details.append(summary, text);
   cells[1].append(title, address, details);
-  const date = document.createElement('time'), clock = document.createElement('small'); cells[7].append(date, clock);
+  const date = document.createElement('time'), clock = document.createElement('small'); cells[8].append(date, clock);
   const badge = document.createElement('span'); badge.className = 'review-label';
   const select = document.createElement('select'); select.className = 'review-select';
   select.setAttribute('aria-label', 'Статус объявления ' + id);
@@ -59,8 +61,31 @@ function makeRow(id) {
   const saving = document.createElement('div'); saving.className = 'review-saving'; saving.setAttribute('aria-live', 'polite');
   select.addEventListener('change', () => changeReview(id, select.value));
   select.addEventListener('blur', () => renderListings());
-  cells[8].append(badge, select, meta, saving);
-  const entry = {row,cells,link,title,address,details,text,date,clock,badge,select,meta,saving};
+  cells[9].append(badge, select, meta, saving);
+  const realtorBadge = document.createElement('span'); realtorBadge.className = 'realtor-label';
+  const commentPreview = document.createElement('small'); commentPreview.className = 'comment-preview';
+  const commentDetails = document.createElement('details'), commentSummary = document.createElement('summary'), commentText = document.createElement('p');
+  commentDetails.className = 'realtor-details'; commentSummary.textContent = 'Комментарий'; commentText.className = 'comment-text';
+  commentDetails.append(commentSummary, commentText);
+  const realtorMeta = document.createElement('small'); realtorMeta.className = 'realtor-meta';
+  const editor = document.createElement('details'); editor.className = 'realtor-editor';
+  const editorSummary = document.createElement('summary'); editorSummary.textContent = 'Оценить / изменить';
+  const realtorForm = document.createElement('form');
+  const realtorSelect = document.createElement('select'); realtorSelect.className = 'realtor-select';
+  realtorSelect.setAttribute('aria-label', 'Оценка риелтора ' + id);
+  for (const [value,label] of Object.entries(realtorLabels)) { const option = document.createElement('option'); option.value=value; option.textContent=label; realtorSelect.append(option); }
+  const comment = document.createElement('textarea'); comment.maxLength = 2000; comment.rows = 4; comment.className = 'realtor-comment';
+  comment.setAttribute('aria-label', 'Комментарий риелтора ' + id);
+  const saveRealtor = document.createElement('button'); saveRealtor.type = 'submit'; saveRealtor.className = 'compact'; saveRealtor.textContent = 'Сохранить';
+  const realtorSaving = document.createElement('small'); realtorSaving.setAttribute('aria-live','polite');
+  realtorForm.append(realtorSelect,comment,saveRealtor,realtorSaving); editor.append(editorSummary,realtorForm);
+  cells[10].append(realtorBadge,commentPreview,commentDetails,realtorMeta,editor);
+  const entry = {row,cells,link,title,address,details,text,date,clock,badge,select,meta,saving,
+    realtorBadge,commentPreview,commentDetails,commentText,realtorMeta,editor,realtorSelect,comment,saveRealtor,realtorSaving,dirty:false};
+  comment.addEventListener('input', () => {entry.dirty=true;});
+  realtorSelect.addEventListener('change', () => {entry.dirty=true;});
+  realtorForm.addEventListener('submit', event => {event.preventDefault(); changeRealtor(id);});
+  for (const field of [realtorSelect,comment]) field.addEventListener('blur', () => renderListings());
   rows.set(id, entry);
   return entry;
 }
@@ -74,8 +99,10 @@ function renderRow(item, forceReview = false) {
   const description = item.card_text || item.description || '';
   details.hidden = !description; setText(text, description);
   setText(cells[2], item.price == null ? '—' : new Intl.NumberFormat('ru-RU', {style:'currency', currency:'RUB', maximumFractionDigits:0}).format(item.price));
-  setText(cells[3], item.area == null ? '—' : item.area + ' м²');
-  setText(cells[4], item.floor || '—'); setText(cells[5], item.metro || '—'); setText(cells[6], item.metro_time || '—');
+  const payment = XataReview.mortgage(item.price);
+  setText(cells[3], payment == null ? '—' : (payment > 0 ? '≈ ' : '') + (Math.round(payment / 100) * 100).toLocaleString('ru-RU') + ' ₽/мес.');
+  setText(cells[4], item.area == null ? '—' : item.area + ' м²');
+  setText(cells[5], item.floor || '—'); setText(cells[6], item.metro || '—'); setText(cells[7], item.metro_time || '—');
   const first = item.first_seen ? new Date(item.first_seen) : null;
   setText(date, first ? first.toLocaleDateString('ru-RU') : '—');
   date.dateTime = item.first_seen || '';
@@ -85,23 +112,42 @@ function renderRow(item, forceReview = false) {
   row.dataset.reviewStatus = review;
   setText(badge, labels[review]);
   if (forceReview || (!pendingReviews.has(item.id) && document.activeElement !== select)) select.value = review;
-  select.disabled = pendingReviews.has(item.id);
+  select.hidden = currentUser?.role === 'realtor';
+  select.disabled = pendingReviews.has(item.id) || currentUser?.role === 'realtor';
   setText(saving, pendingReviews.has(item.id) ? 'Сохраняем…' : '');
   let author = item.review_updated_by_name || item.review_updated_by_username;
   if (!author && item.review_updated_by) author = 'Пользователь #' + item.review_updated_by;
   const changed = item.review_updated_at ? new Date(item.review_updated_at) : null;
   setText(meta, changed ? (author || '') + ' · ' + changed.toLocaleString('ru-RU', {day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit'}) : '');
   meta.title = changed ? changed.toLocaleString('ru-RU') : '';
+  const realtor = item.realtor_status || 'pending';
+  setText(entry.realtorBadge, realtorLabels[realtor]);
+  entry.realtorBadge.className = 'realtor-label realtor-' + realtor;
+  setText(entry.commentPreview, item.realtor_comment ? item.realtor_comment.slice(0,60) + (item.realtor_comment.length > 60 ? '…' : '') : '');
+  entry.commentDetails.hidden = !item.realtor_comment;
+  setText(entry.commentText, item.realtor_comment || '');
+  const realtorAuthor = item.realtor_updated_by_name || item.realtor_updated_by_username || (item.realtor_updated_by ? 'Пользователь #' + item.realtor_updated_by : '');
+  const realtorDate = item.realtor_updated_at ? new Date(item.realtor_updated_at) : null;
+  setText(entry.realtorMeta, realtorDate ? realtorAuthor + ' · ' + realtorDate.toLocaleString('ru-RU', {day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '');
+  entry.realtorMeta.title = realtorDate ? realtorDate.toLocaleString('ru-RU') : '';
+  const canRealtor = ['admin','realtor'].includes(currentUser?.role);
+  entry.editor.hidden = !canRealtor;
+  entry.realtorSelect.disabled = entry.comment.disabled = entry.saveRealtor.disabled = !canRealtor || pendingRealtors.has(item.id);
+  if (!entry.dirty && !pendingRealtors.has(item.id)) {
+    entry.realtorSelect.value = realtor;
+    entry.comment.value = item.realtor_comment || '';
+  }
+  setText(entry.realtorSaving, pendingRealtors.has(item.id) ? 'Сохраняем…' : '');
   row.hidden = selectedFilter !== 'all' && selectedFilter !== review;
   return row;
 }
 function renderListings() {
   const body = document.querySelector('#listings');
-  const ordered = XataReview.ordered(records.values());
-  const counts = {all:ordered.length,new:0,viewed:0,rejected:0};
-  for (const item of ordered) { counts[item.review_status || 'new'] += 1; const row = renderRow(item); if (!row.parentNode) body.append(row); }
+  const ordered = XataReview.ordered(records.values(), selectedSort);
+  const counts = XataReview.counts(ordered);
+  for (const item of ordered) { const row = renderRow(item); if (!row.parentNode) body.append(row); }
   // Keep focused status controls/details in place during refresh.
-  if (!pendingReviews.size && !document.activeElement?.matches('.review-select')) {
+  if (!pendingReviews.size && !pendingRealtors.size && !document.activeElement?.matches('.review-select,.realtor-select,.realtor-comment')) {
     let cursor = body.firstElementChild;
     for (const item of ordered) {
       const row = rows.get(item.id).row;
@@ -137,12 +183,36 @@ async function changeReview(id, nextStatus) {
   }
 }
 for (const node of document.querySelectorAll('[data-review-filter]')) node.addEventListener('click', () => { selectedFilter = node.dataset.reviewFilter; renderListings(); });
+async function changeRealtor(id) {
+  if (pendingRealtors.has(id)) return;
+  const entry = rows.get(id), data = {status:entry.realtorSelect.value,comment:entry.comment.value};
+  pendingRealtors.add(id); renderRow(records.get(id));
+  try {
+    const saved = await responseJson(await apiFetch('/api/listings/' + encodeURIComponent(id) + '/realtor-review', jsonOptions('POST',data)));
+    acceptListing(saved); entry.dirty = false;
+    setText(message,'Оценка риелтора сохранена.'); message.className='';
+  } catch(error) { setText(message,error.message); message.className='error'; }
+  finally {pendingRealtors.delete(id); renderListings();}
+}
+for (const node of document.querySelectorAll('[data-sort]')) node.addEventListener('click', () => {
+  selectedSort = XataReview.cycleSort(selectedSort,node.dataset.sort);
+  for (const header of document.querySelectorAll('[data-sort]')) {
+    const direction = selectedSort?.key === header.dataset.sort ? selectedSort.direction : null;
+    header.closest('th').setAttribute('aria-sort', direction === 'asc' ? 'ascending' : direction === 'desc' ? 'descending' : 'none');
+    setText(header.querySelector('[data-sort-indicator]'),direction === 'asc' ? ' ↑' : direction === 'desc' ? ' ↓' : '');
+  }
+  renderListings();
+});
 async function refresh() {
   if (refreshing) return;
   refreshing = true;
   try {
     const data = await responseJson(await apiFetch('/api/state'));
     identify(data.user);
+    setText(document.querySelector('#last-sync'), 'Последняя успешная синхронизация с ЦИАН: ' + (data.last_success ? new Date(data.last_success).toLocaleString('ru-RU') : 'ещё не было'));
+    const criteria = data.criteria || {max_price:14500000,metro_minutes:20};
+    setText(document.querySelector('#criteria-price'),'Бюджет до ' + (criteria.max_price / 1000000).toLocaleString('ru-RU') + ' млн ₽');
+    setText(document.querySelector('#criteria-metro'),'До метро — не более ' + criteria.metro_minutes + ' минут пешком');
     for (const item of data.listings) acceptListing(item);
     renderListings();
     if (currentUser.role !== 'admin') return;
@@ -162,7 +232,7 @@ async function refresh() {
 form.addEventListener('submit', async event => {
   event.preventDefault(); pending = true; button.disabled = true;
   try {
-    await responseJson(await apiFetch('/api/browser/collect', jsonOptions('POST', {max_price:Number(document.querySelector('#price').value), metro_minutes:Number(document.querySelector('#metro').value)})));
+    await responseJson(await apiFetch('/api/browser/collect', jsonOptions('POST', {})));
   } catch(error) { status.className = 'error'; setText(status, error.message); }
   finally { pending = false; await refresh(); }
 });
@@ -257,12 +327,14 @@ async function loadUsers() {
       const display = input('Имя', 'display_name', user.display_name);
       const roleBox = document.createElement('div'), roleLabel = document.createElement('label'), role = document.createElement('select');
       role.id = 'user-' + user.id + '-role'; roleLabel.htmlFor = role.id; roleLabel.textContent = 'Роль';
-      for (const [value,label] of [['reviewer','Просмотр'],['admin','Администратор']]) {
+      for (const [value,label] of [['reviewer','Просмотр'],['realtor','Риелтор'],['admin','Администратор']]) {
         const option = document.createElement('option'); option.value = value; option.textContent = label; role.append(option);
       }
       role.value = user.role; roleBox.append(roleLabel, role); edit.append(roleBox);
       const password = input('Новый пароль (необязательно)', 'password', '', 'password');
-      password.minLength = 12; password.autocomplete = 'new-password';
+      password.autocomplete = 'new-password';
+      const passwordRule = () => {password.minLength = role.value === 'admin' ? 12 : 8; password.placeholder = 'Минимум ' + password.minLength + ' символов';};
+      role.addEventListener('change',passwordRule); passwordRule();
       const save = document.createElement('button'); save.type = 'submit'; save.textContent = 'Сохранить'; edit.append(save);
       const enabledLabel = document.createElement('label'); enabledLabel.className = 'enabled-label';
       const enabled = document.createElement('input'); enabled.type = 'checkbox'; enabled.checked = !!user.enabled;
@@ -286,13 +358,19 @@ async function loadUsers() {
   } catch(error) { setText(usersMessage, error.message); usersMessage.className = 'error'; }
 }
 document.querySelector('#users-panel').addEventListener('toggle', event => { if (event.target.open) loadUsers(); });
+const createRole = document.querySelector('#new-role'), createPassword = document.querySelector('#new-password');
+function createPasswordRule() {
+  createPassword.minLength = createRole.value === 'admin' ? 12 : 8;
+  setText(document.querySelector('label[for="new-password"]'), 'Пароль · минимум ' + createPassword.minLength + ' символов');
+}
+createRole.addEventListener('change',createPasswordRule); createPasswordRule();
 document.querySelector('#user-create').addEventListener('submit', async event => {
   event.preventDefault();
   const form = event.target, save = form.querySelector('button'), data = new FormData(form);
   save.disabled = true;
   try {
     await responseJson(await apiFetch('/api/users', jsonOptions('POST', Object.fromEntries(data))));
-    form.reset(); setText(usersMessage, 'Пользователь создан.'); usersMessage.className = ''; await loadUsers();
+    form.reset(); createPasswordRule(); setText(usersMessage, 'Пользователь создан.'); usersMessage.className = ''; await loadUsers();
   } catch(error) { setText(usersMessage, error.message); usersMessage.className = 'error'; }
   finally { form.elements.password.value = ''; save.disabled = false; }
 });

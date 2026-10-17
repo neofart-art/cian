@@ -276,3 +276,35 @@ def test_loading_classification_retries_then_collects_cards(tmp_path, monkeypatc
     assert 'browser collection error stage=classification_loading' not in caplog.text
     assert 'matching_card_nodes=2' in caplog.text
     assert 'PRIVATE' not in caplog.text and 'DO_NOT_LOG' not in caplog.text
+
+
+
+def test_timelabel_is_only_used_for_explicit_travel_duration(tmp_path):
+    """TimeLabel publication timestamps cannot replace a rendered metro route."""
+    async def scenario():
+        from playwright.async_api import async_playwright
+        from collector.service import Collector
+        async with async_playwright() as playwright:
+            context = await playwright.chromium.launch_persistent_context(str(tmp_path/'profile'),headless=True)
+            page = context.pages[0]
+            collector = Collector(context)
+            collector.page = page
+            for label,route,expected,walk in [
+                ('4 часа назад сегодня, 13:25','м. Сокол<br>7 мин пешком','7 мин. пешком',7),
+                ('вчера вечером','м. Сокол<br>12 минут пешком','12 мин. пешком',12),
+                ('7 минут назад','м. Сокол',None,None),
+                ('сегодня, 13:25','м. Сокол',None,None),
+                ('7 мин пешком','м. Сокол','7 мин. пешком',7),
+                ('5 мин. транспортом','м. Сокол<br>7 мин пешком','5 мин. транспортом',None),
+            ]:
+                html = ('<!doctype html><meta charset="utf-8"><span data-name="UserAvatar">Профиль</span>'
+                        '<article data-name="CardComponent"><a href="https://cian.ru/sale/flat/123/">Квартира</a>'
+                        '<div>'+route+'</div><span data-name="TimeLabel">'+label+'</span></article>')
+                await context.route('**/*',lambda route:route.fulfill(status=200,content_type='text/html; charset=utf-8',body=html))
+                result = await collector.collect(URL)
+                assert result['status']=='authorized', result
+                assert result['items'][0].get('metro_time')==expected
+                assert result['items'][0].get('metro_walk_minutes')==walk
+                await context.unroute('**/*')
+            await context.close()
+    asyncio.run(scenario())

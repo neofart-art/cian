@@ -62,6 +62,29 @@ def number(value, label, integer=False):
         raise SourceError(f'Поле «{label}»: ожидается положительное число, получено «{value[:60]}».') from exc
 
 
+def is_publication_time(value):
+    return bool(value and re.search(r'сегодня|вчера|позавчера|назад', value, re.I))
+
+
+def travel_duration(value):
+    """Accept a whole, explicit travel duration, never a publication timestamp."""
+    if not value or is_publication_time(value):
+        return None
+    value = re.sub(r'\s+', ' ', value).strip()
+    match = re.fullmatch(r'(\d{1,3})\s*мин(?:ут(?:а|ы)?)?\.?\s*(пешком|транспортом|на транспорте)[.!]?', value, re.I)
+    if not match:
+        reverse = re.fullmatch(r'пешком\s*[:—-]?\s*(\d{1,3})\s*мин(?:ут(?:а|ы)?)?\.?', value, re.I)
+        if not reverse:
+            return None
+        minutes, walking = int(reverse[1]), True
+    else:
+        minutes, walking = int(match[1]), match[2].lower() == 'пешком'
+    if not 1 <= minutes <= 180:
+        return None
+    return {'metro_time': f'{minutes} мин. ' + ('пешком' if walking else 'транспортом'),
+            'metro_walk_minutes': minutes if walking else None}
+
+
 def parse_card_text(text):
     """Conservative best effort; raw text is always kept for manual verification."""
     result = {}
@@ -101,12 +124,12 @@ def parse_card_text(text):
         metro_context = bool(re.search(r'(?:метро|(?:^|\s)м\.)', line, re.I)) or (
             bool(result.get('metro')) and bool(re.fullmatch(r'\d{1,3}\s*мин(?:ут[а-я]*)?\.?\s*пешком[.!]?', line, re.I))
             and any(re.match(r'^(?:м\.|метро)', previous, re.I) for previous in lines[max(0, position - 2):position]))
-        if walk and metro_context and 'metro_walk_minutes' not in result:
+        if walk and metro_context and not is_publication_time(line) and 1 <= int(walk[1]) <= 180 and 'metro_walk_minutes' not in result:
             result['metro_walk_minutes'] = int(walk[1])
             result['metro_time'] = f'{int(walk[1])} мин. пешком'
         elif 'metro_time' not in result:
-            transport = re.search(r'(\d{1,3})\s*мин\.?\s*(?:на транспорте|транспортом)', line, re.I)
-            if transport:
+            transport = re.search(r'(\d{1,3})\s*мин(?:ут(?:а|ы)?)?\.?\s*(?:на транспорте|транспортом)', line, re.I)
+            if transport and not is_publication_time(line) and 1 <= int(transport[1]) <= 180:
                 result['metro_time'] = f'{int(transport[1])} мин. транспортом'
     if text:
         parts = re.split(r'(?:^|\n)Описание\s*[:\n]\s*', text, maxsplit=1, flags=re.I)
@@ -180,6 +203,10 @@ class CianCsvSource:
                 except SourceError as exc:
                     raise SourceError(f'Строка {reader.line_num}: {exc}') from exc
                 extracted = parse_card_text(item.get('card_text', ''))
+                duration = travel_duration(item.get('metro_time'))
+                item.pop('metro_time', None)
+                if duration:
+                    item.update(duration)
                 item = {**extracted, **{key: value for key, value in item.items() if value not in (None, '')}}
                 item['source'] = self.name
                 # Last occurrence wins, but empty cells never erase supplied values.
