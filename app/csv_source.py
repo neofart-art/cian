@@ -205,9 +205,9 @@ class CianCsvSource:
                 extracted = parse_card_text(item.get('card_text', ''))
                 duration = travel_duration(item.get('metro_time'))
                 item.pop('metro_time', None)
+                item = {**extracted, **{key: value for key, value in item.items() if value not in (None, '')}}
                 if duration:
                     item.update(duration)
-                item = {**extracted, **{key: value for key, value in item.items() if value not in (None, '')}}
                 item['source'] = self.name
                 # Last occurrence wins, but empty cells never erase supplied values.
                 previous = rows.get(item_id, {})

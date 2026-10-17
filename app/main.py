@@ -107,7 +107,14 @@ LISTING_ORDER = " ORDER BY CASE l.review_status WHEN 'new' THEN 0 WHEN 'liked' T
 
 
 def listing_data(row):
-    item = dict(row)
+    # Preserve unknown database columns during migrations without exposing them
+    # through the public listing API (including possible non-UTF8 BLOB values).
+    fields = ('id', *LISTING_FIELDS, 'first_seen', 'last_seen', 'last_imported',
+              'review_status', 'review_updated_at', 'review_updated_by', 'review_version',
+              'review_updated_by_name', 'review_updated_by_username',
+              'realtor_status', 'realtor_comment', 'realtor_updated_at', 'realtor_updated_by', 'realtor_version',
+              'realtor_updated_by_name', 'realtor_updated_by_username')
+    item = {field: row[field] for field in fields}
     item['mortgage_payment'] = mortgage_payment(item['price'])
     return item
 

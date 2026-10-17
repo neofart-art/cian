@@ -237,6 +237,7 @@ def test_realtor_roles_independent_statuses_and_refresh_xlsx(multi_app,caplog):
         assert agent.patch('/api/users/1',json={'enabled':False}).status_code==403
         assert agent.post('/api/listings/missing/realtor-review',json={'status':'pending'}).status_code==404
         assert agent.post('/api/listings/123/realtor-review',json={'status':'bad'}).status_code==422
+        assert agent.post('/api/listings/123/realtor-review',json={'status':'approved','comment':'bad\x00text'}).status_code==422
         assert agent.post('/api/listings/123/realtor-review',json={'status':'approved','comment':'x'*2001}).status_code==422
         for headers in ({'X-CSRF-Token':'bad'},{'Origin':'https://evil.test'},{'Sec-Fetch-Site':'cross-site'}):
             assert agent.post('/api/listings/123/realtor-review',json={'status':'approved'},headers=headers).status_code==403
@@ -323,3 +324,21 @@ def test_versioned_assets_and_readonly_criteria(multi_app):
     assert 'Критерии поиска' in html.text and 'Сравниваем варианты. Выбираем лучшее.' in html.text
     with TestClient(main.app,base_url='https://testserver') as client:
         assert re.search(r'/static/login.js\?v=[a-f0-9]{16}',client.get('/login').text)
+
+
+
+@pytest.mark.parametrize('explicit,expected,walk',[
+    ('4 часа назад сегодня, 13:25','7 мин. пешком',7),
+    ('5 мин. транспортом','5 мин. транспортом',None),
+    ('12 минут пешком','12 мин. пешком',12),
+])
+def test_csv_explicit_duration_does_not_retain_wrong_walking_minutes(explicit,expected,walk):
+    import csv
+    from app.csv_source import CianCsvSource
+    output=io.StringIO()
+    writer=csv.writer(output,delimiter=';')
+    writer.writerow(['url','card_text','metro_time'])
+    writer.writerow(['https://cian.ru/sale/flat/123/','м. Сокол\n7 мин пешком',explicit])
+    item=CianCsvSource().parse(output.getvalue().encode('utf-8'))['items'][0]
+    assert item['metro_time']==expected
+    assert item.get('metro_walk_minutes')==walk
