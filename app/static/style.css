@@ -53,3 +53,11 @@ footer{font-size:13px}
   h2{font-size:20px}
   .export{font-size:14px}
 }
+
+
+/* XATA logo */
+.brand-logo-wrap{display:flex;align-items:center;gap:18px;letter-spacing:0;min-width:0}
+.brand-logo{display:block;width:220px;max-width:44vw;height:auto;mix-blend-mode:multiply}
+.brand-logo-wrap span{margin-left:0}
+@media(max-width:1000px){.brand-logo{width:200px}}
+@media(max-width:480px){.brand-logo{width:150px;max-width:48vw}}
