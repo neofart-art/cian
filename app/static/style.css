@@ -7,3 +7,49 @@
 #identity{min-width:0;overflow-wrap:anywhere}.identity{min-width:0}input,select{min-width:0}.user-form{grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,.8fr) minmax(0,1.3fr) auto}@media(max-width:1000px){.user-form{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}@media(max-width:480px){.user-form{grid-template-columns:minmax(0,1fr)}}
 
 .slogan{font-weight:650;color:#294b3e!important}.criteria{padding:16px 20px;max-width:1000px}.criteria h2{font-size:16px;margin-bottom:8px}.criteria ul{display:flex;flex-wrap:wrap;gap:8px 22px;padding:0;list-style:none;margin:0;font-size:13px}.criteria li{background:#eef1e5;padding:4px 8px;border-radius:5px}.review-liked .review-label{background:#cbe6a6;border-color:#8bb75e;color:#244616}.review-viewed .review-label{background:#e0e7de;color:#415447}.review-rejected .review-label{background:#f3dcd5;border-color:#d5a79b;color:#7c3730}.review-label,.realtor-label{overflow-wrap:anywhere;max-width:100%}.realtor-label{display:inline-block;font-size:11px;font-weight:600;padding:2px 6px;border:1px solid #c7cec2;border-radius:5px;background:#f0f1ec;color:#526059}.realtor-approved{background:#e3efd7;color:#315727;border-color:#adc693}.realtor-rejected{background:#f6e4df;color:#803f35;border-color:#d5b1a5}.realtor-meta,.comment-preview{font-size:11px}.realtor-details summary,.realtor-editor summary{font-size:11px;font-weight:400;padding:4px 0}.comment-text{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}.realtor-editor form{gap:7px;margin:5px 0}.realtor-select,.realtor-comment{font:inherit;font-size:12px;width:100%;min-width:0;padding:5px;border:1px solid #b8c5b7;border-radius:5px;background:#fffefa;color:#263d37}.realtor-comment{resize:vertical}.sort-button{background:transparent;color:inherit;font:inherit;text-transform:inherit;letter-spacing:inherit;text-align:left;padding:0;min-height:30px;max-width:100%;border-radius:2px}.sort-button:hover{text-decoration:underline}th[aria-sort=ascending],th[aria-sort=descending]{color:#294b3e}.sort-button [data-sort-indicator]{white-space:nowrap}#filters{display:block}
+
+
+/* Typography scale-up v1 */
+body{font-size:17px}
+.brand{font-size:29px}
+.brand span{font-size:14px}
+.identity{font-size:15px}
+.eyebrow{font-size:13px}
+h1{font-size:clamp(34px,3.2vw,50px)}
+label{font-size:14px}
+input,select{font-size:16px}
+button,.export{font-size:16px}
+.note{font-size:14px}
+h2{font-size:23px}
+h2 span{font-size:15px}
+summary{font-size:16px}
+.compact{font-size:14px}
+#status{font-size:15px}
+dl{font-size:15px}
+#import-sample{font-size:15px}
+.status-filters button{font-size:15px}
+#page-message{font-size:15px}
+th{font-size:12px}
+td{font-size:15px;line-height:1.55}
+td small{font-size:13px}
+.object-cell details{font-size:14px}
+.object-cell summary{font-size:14px}
+.review-label{font-size:13px}
+.review-select{font-size:14px}
+.review-meta,.review-saving{font-size:13px}
+#empty{font-size:16px}
+footer{font-size:13px}
+.criteria h2{font-size:18px}
+.criteria ul{font-size:15px}
+.realtor-label{font-size:13px}
+.realtor-meta,.comment-preview{font-size:13px}
+.realtor-details summary,.realtor-editor summary{font-size:13px}
+.comment-text{font-size:14px}
+.realtor-select,.realtor-comment{font-size:14px}
+
+@media(max-width:480px){
+  .brand{font-size:25px}
+  .identity{font-size:13px}
+  h2{font-size:20px}
+  .export{font-size:14px}
+}
