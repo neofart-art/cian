@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field, ConfigDict, field_validator
 from typing import Literal
 from app.auth import AuthStore, UNSAFE
 from app.migrations import migrate_listings
-from app.criteria import browser_criteria
+from app.property_match import (best_match, candidate_rows, create_property, record_price,\n                                sync_property_reviews, touch_property)\nfrom app.criteria import browser_criteria
 from app.finance import mortgage_payment
 from app import source
 from app.csv_source import CianCsvSource, MAX_BYTES
@@ -109,7 +109,7 @@ LISTING_ORDER = " ORDER BY CASE l.review_status WHEN 'new' THEN 0 WHEN 'liked' T
 def listing_data(row):
     # Preserve unknown database columns during migrations without exposing them
     # through the public listing API (including possible non-UTF8 BLOB values).
-    fields = ('id', *LISTING_FIELDS, 'first_seen', 'last_seen', 'last_imported',
+    fields = ('id', *LISTING_FIELDS, 'first_seen', 'last_seen', 'last_imported', 'property_id',
               'review_status', 'review_updated_at', 'review_updated_by', 'review_version',
               'review_updated_by_name', 'review_updated_by_username',
               'realtor_status', 'realtor_comment', 'realtor_updated_at', 'realtor_updated_by', 'realtor_version',
@@ -117,6 +117,69 @@ def listing_data(row):
     item = {field: row[field] for field in fields}
     item['mortgage_payment'] = mortgage_payment(item['price'])
     return item
+
+
+def property_listing_data(conn, row):
+    item = listing_data(row)
+    property_id = item.get('property_id')
+    if not property_id:
+        item.update(listing_ids=[item['id']], relist_count=0, price_min=item['price'], price_max=item['price'],
+                    duplicate_candidate=None)
+        return item
+    history = conn.execute(
+        'SELECT id,first_seen,last_seen,price FROM listings WHERE property_id=? ORDER BY COALESCE(first_seen,last_seen),id',
+        (property_id,),
+    ).fetchall()
+    item['listing_ids'] = [entry['id'] for entry in history]
+    item['relist_count'] = max(0, len(history) - 1)
+    first_seen = [entry['first_seen'] for entry in history if entry['first_seen']]
+    if first_seen:
+        item['first_seen'] = min(first_seen)
+    prices = [entry['price'] for entry in conn.execute(
+        'SELECT price FROM price_history WHERE property_id=? ORDER BY id', (property_id,)
+    ).fetchall()]
+    item['price_min'] = min(prices) if prices else item['price']
+    item['price_max'] = max(prices) if prices else item['price']
+    pending = conn.execute(
+        """SELECT dc.*,l.id AS candidate_listing_id
+           FROM duplicate_candidates dc
+           JOIN listings l ON l.property_id=dc.candidate_property_id
+           WHERE dc.decision='pending'
+             AND dc.listing_id IN (SELECT id FROM listings WHERE property_id=?)
+           ORDER BY dc.confidence DESC,COALESCE(l.last_seen,l.first_seen) DESC
+           LIMIT 1""",
+        (property_id,),
+    ).fetchone()
+    item['duplicate_candidate'] = ({
+        'confidence': pending['confidence'],
+        'candidate_property_id': pending['candidate_property_id'],
+        'candidate_listing_id': pending['candidate_listing_id'],
+    } if pending else None)
+    return item
+
+
+def current_property_row(conn, property_id):
+    return conn.execute(
+        LISTING_QUERY + ' WHERE l.property_id=? ORDER BY COALESCE(l.last_seen,l.first_seen) DESC,l.id DESC LIMIT 1',
+        (property_id,),
+    ).fetchone()
+
+
+def grouped_listing_data(conn):
+    rows = conn.execute(LISTING_QUERY).fetchall()
+    representatives = {}
+    for row in rows:
+        key = row['property_id'] if row['property_id'] is not None else 'listing:' + row['id']
+        current = representatives.get(key)
+        stamp = row['last_seen'] or row['first_seen'] or ''
+        current_stamp = (current['last_seen'] or current['first_seen'] or '') if current else ''
+        if current is None or (stamp, row['id']) > (current_stamp, current['id']):
+            representatives[key] = row
+    items = [property_listing_data(conn, row) for row in representatives.values()]
+    items.sort(key=lambda item: item.get('first_seen') or '', reverse=True)
+    rank = {'new': 0, 'liked': 1, 'viewed': 2, 'rejected': 3}
+    items.sort(key=lambda item: rank.get(item.get('review_status'), 9))
+    return items
 
 
 def browser_state():
@@ -136,7 +199,8 @@ LISTING_FIELDS = ('title', 'price', 'address', 'url', 'complex_name', 'area', 'f
 
 
 def save_items(conn, items, now, imported=False):
-    added = updated = 0
+    added = updated = relisted = possible_duplicates = 0
+    incoming_ids = {str(item['id']) for item in items}
     for item in items:
         previous = conn.execute('SELECT * FROM listings WHERE id=?', (item['id'],)).fetchone()
         merged = dict(previous) if previous else {'title': 'Квартира'}
@@ -145,16 +209,43 @@ def save_items(conn, items, now, imported=False):
             merged['metro_walk_minutes'] = item.get('metro_walk_minutes')
         values = [merged.get(field) for field in LISTING_FIELDS]
         if previous:
+            property_id = previous['property_id']
+            if property_id is None:
+                property_id = create_property(conn, merged, previous['first_seen'] or now)
+                conn.execute('UPDATE listings SET property_id=? WHERE id=?', (property_id, item['id']))
             conn.execute('UPDATE listings SET ' + ','.join(f'{field}=?' for field in LISTING_FIELDS) +
                          ',last_seen=?,last_imported=? WHERE id=?',
                          (*values, now, now if imported else previous['last_imported'], item['id']))
+            touch_property(conn, property_id, merged, now)
+            record_price(conn, property_id, item['id'], now, merged.get('price'))
             updated += 1
+            continue
+
+        match = best_match(merged, candidate_rows(conn, incoming_ids))
+        if match and match[2].auto:
+            property_id = match[0]
+            relisted += 1
         else:
-            fields = ('id', *LISTING_FIELDS, 'first_seen', 'last_seen', 'last_imported')
-            conn.execute('INSERT INTO listings (' + ','.join(fields) + ') VALUES (' + ','.join('?' for _ in fields) + ')',
-                         (item['id'], *values, now, now, now if imported else None))
+            property_id = create_property(conn, merged, now)
             added += 1
-    return {'added': added, 'updated': updated}
+
+        fields = ('id', *LISTING_FIELDS, 'first_seen', 'last_seen', 'last_imported', 'property_id')
+        conn.execute('INSERT INTO listings (' + ','.join(fields) + ') VALUES (' + ','.join('?' for _ in fields) + ')',
+                     (item['id'], *values, now, now, now if imported else None, property_id))
+        touch_property(conn, property_id, merged, now)
+        record_price(conn, property_id, item['id'], now, merged.get('price'))
+
+        if match and match[2].auto:
+            sync_property_reviews(conn, property_id)
+        elif match and match[2].possible:
+            conn.execute(
+                """INSERT OR IGNORE INTO duplicate_candidates(
+                   listing_id,candidate_property_id,confidence,reasons,created_at)
+                   VALUES (?,?,?,?,?)""",
+                (item['id'], match[0], match[2].score, ','.join(match[2].reasons), now),
+            )
+            possible_duplicates += 1
+    return {'added': added, 'updated': updated, 'relisted': relisted, 'possible_duplicates': possible_duplicates}
 
 
 @asynccontextmanager
@@ -214,7 +305,7 @@ async def protect_origin(request, call_next):
 
 STATIC = Path(__file__).parent / 'static'
 ASSET_VERSIONS = {name: hashlib.sha256((STATIC / name).read_bytes()).hexdigest()[:16]
-                  for name in ('app.js', 'review-state.js', 'login.js', 'style.css')}
+                  for name in ('app.js', 'review-state.js', 'login.js', 'style.css', 'xata-logo.svg', 'xata-mark.svg')}
 
 
 def html_document(name):
@@ -243,7 +334,7 @@ def state(user=Depends(auth)):
     with database() as conn:
         # Read listings and their run from one SQLite snapshot.
         conn.execute('BEGIN')
-        listings = [listing_data(row) for row in conn.execute(LISTING_QUERY + LISTING_ORDER)]
+        listings = grouped_listing_data(conn)
         run = conn.execute('SELECT * FROM runs ORDER BY id DESC LIMIT 1').fetchone()
     saved_browser = browser_state()
     result = {'listings': listings, 'user': user, 'last_success': saved_browser.get('last_success'), 'criteria': browser_criteria()}
@@ -263,12 +354,16 @@ def review_listing(listing_id: str, data: Review, user=Depends(auth)):
     timestamp = datetime.now(timezone.utc).isoformat()
     with database() as conn:
         conn.execute('BEGIN IMMEDIATE')
+        target = conn.execute('SELECT property_id FROM listings WHERE id=?', (listing_id,)).fetchone()
+        if not target:
+            raise HTTPException(404, 'Объявление не найдено')
+        property_id = target['property_id']
         cursor = conn.execute('''UPDATE listings SET review_status=?,review_updated_at=?,review_updated_by=?,
-                                 review_version=review_version+1 WHERE id=?''',
-                              (data.status, timestamp, user['id'], listing_id))
+                                 review_version=review_version+1 WHERE property_id=?''',
+                              (data.status, timestamp, user['id'], property_id))
         if not cursor.rowcount:
             raise HTTPException(404, 'Объявление не найдено')
-        item = listing_data(conn.execute(LISTING_QUERY + ' WHERE l.id=?', (listing_id,)).fetchone())
+        item = property_listing_data(conn, current_property_row(conn, property_id))
     log.info('Review changed user_id=%s listing_id=%s', user['id'], listing_id)
     return item
 
@@ -293,12 +388,16 @@ def realtor_review(listing_id: str, data: RealtorReview, user=Depends(auth)):
     timestamp = datetime.now(timezone.utc).isoformat()
     with database() as conn:
         conn.execute('BEGIN IMMEDIATE')
+        target = conn.execute('SELECT property_id FROM listings WHERE id=?', (listing_id,)).fetchone()
+        if not target:
+            raise HTTPException(404, 'Объявление не найдено')
+        property_id = target['property_id']
         cursor = conn.execute('''UPDATE listings SET realtor_status=?,realtor_comment=?,realtor_updated_at=?,
-                                 realtor_updated_by=?,realtor_version=realtor_version+1 WHERE id=?''',
-                              (data.status, data.comment, timestamp, user['id'], listing_id))
+                                 realtor_updated_by=?,realtor_version=realtor_version+1 WHERE property_id=?''',
+                              (data.status, data.comment, timestamp, user['id'], property_id))
         if not cursor.rowcount:
             raise HTTPException(404, 'Объявление не найдено')
-        item = listing_data(conn.execute(LISTING_QUERY + ' WHERE l.id=?', (listing_id,)).fetchone())
+        item = property_listing_data(conn, current_property_row(conn, property_id))
     log.info('Realtor review changed user_id=%s listing_id=%s', user['id'], listing_id)
     return item
 
