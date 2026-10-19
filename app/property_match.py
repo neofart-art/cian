@@ -231,12 +231,15 @@ def sync_property_reviews(conn, property_id):
     if not rows:
         return
 
-    def newest(field):
+    def newest(field, state_field, default_state):
         dated = [row for row in rows if row[field]]
-        return max(dated, key=lambda row: row[field]) if dated else rows[0]
+        if dated:
+            return max(dated, key=lambda row: row[field])
+        meaningful = [row for row in rows if row[state_field] != default_state]
+        return meaningful[0] if meaningful else rows[0]
 
-    review = newest("review_updated_at")
-    realtor = newest("realtor_updated_at")
+    review = newest("review_updated_at", "review_status", "new")
+    realtor = newest("realtor_updated_at", "realtor_status", "pending")
     conn.execute(
         """UPDATE listings SET
            review_status=?,review_updated_at=?,review_updated_by=?,review_version=?,
