@@ -402,6 +402,61 @@ def realtor_review(listing_id: str, data: RealtorReview, user=Depends(auth)):
     return item
 
 
+class DuplicateDecision(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    decision: Literal['same', 'different']
+
+
+@app.post('/api/listings/{listing_id}/duplicate-decision')
+def duplicate_decision(listing_id: str, data: DuplicateDecision, user=Depends(auth)):
+    if user['role'] not in ('admin', 'reviewer'):
+        raise HTTPException(403, 'Подтверждение дублей доступно семье и администратору')
+    timestamp = datetime.now(timezone.utc).isoformat()
+    with database() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        listing = conn.execute('SELECT * FROM listings WHERE id=?', (listing_id,)).fetchone()
+        if not listing:
+            raise HTTPException(404, 'Объявление не найдено')
+        candidate = conn.execute(
+            """SELECT * FROM duplicate_candidates
+               WHERE listing_id=? AND decision='pending'
+               ORDER BY confidence DESC,id DESC LIMIT 1""",
+            (listing_id,),
+        ).fetchone()
+        if not candidate:
+            raise HTTPException(409, 'Для объявления нет ожидающего подтверждения дубля')
+
+        if data.decision == 'different':
+            conn.execute(
+                """UPDATE duplicate_candidates SET decision='rejected',decided_at=?,decided_by=?
+                   WHERE id=?""",
+                (timestamp, user['id'], candidate['id']),
+            )
+            item = property_listing_data(conn, current_property_row(conn, listing['property_id']))
+            return item
+
+        source_property = listing['property_id']
+        target_property = candidate['candidate_property_id']
+        if source_property != target_property:
+            conn.execute('UPDATE listings SET property_id=? WHERE property_id=?', (target_property, source_property))
+            conn.execute('UPDATE price_history SET property_id=? WHERE property_id=?', (target_property, source_property))
+            conn.execute('DELETE FROM duplicate_candidates WHERE candidate_property_id=?', (source_property,))
+            sync_property_reviews(conn, target_property)
+            target_row = current_property_row(conn, target_property)
+            if target_row:
+                touch_property(conn, target_property, dict(target_row), timestamp)
+            if not conn.execute('SELECT 1 FROM listings WHERE property_id=?', (source_property,)).fetchone():
+                conn.execute('DELETE FROM properties WHERE id=?', (source_property,))
+        conn.execute(
+            """UPDATE duplicate_candidates SET decision='confirmed',decided_at=?,decided_by=?
+               WHERE id=?""",
+            (timestamp, user['id'], candidate['id']),
+        )
+        item = property_listing_data(conn, current_property_row(conn, target_property))
+    log.info('Duplicate decision user_id=%s listing_id=%s decision=%s', user['id'], listing_id, data.decision)
+    return item
+
+
 def run_collection(run_id, filters, kind='online'):
     try:
         items = (CianBrowserSource() if kind == 'browser' else source.CianOnlineSource()).collect(filters)
