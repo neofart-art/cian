@@ -655,10 +655,21 @@ def export():
     book = Workbook()
     sheet = book.active
     sheet.title = 'Объявления'
-    sheet.append(['ID', 'Название', 'Цена, ₽', 'Адрес', 'Ссылка', 'Впервые найдено (UTC)', 'Последнее обновление (UTC)', 'ЖК', 'Площадь, м²', 'Этаж', 'Метро', 'Время до метро', 'Источник', 'Последний импорт (UTC)', 'Текст карточки', 'Описание', 'Пешком до метро, мин', 'Статус', 'Статус изменил', 'Дата изменения статуса (UTC)', 'Оценка риелтора', 'Комментарий риелтора', 'Риелторскую оценку изменил', 'Дата риелторской оценки (UTC)', 'Ипотека / мес. (6 млн / 18% / 15 лет)'])
+    sheet.append(['ID', 'Название', 'Цена, ₽', 'Адрес', 'Ссылка', 'Впервые найдено (UTC)', 'Последнее обновление (UTC)', 'ЖК', 'Площадь, м²', 'Этаж', 'Метро', 'Время до метро', 'Источник', 'Последний импорт (UTC)', 'Текст карточки', 'Описание', 'Пешком до метро, мин', 'Статус', 'Статус изменил', 'Дата изменения статуса (UTC)', 'Оценка риелтора', 'Комментарий риелтора', 'Риелторскую оценку изменил', 'Дата риелторской оценки (UTC)', 'Ипотека / мес. (6 млн / 18% / 15 лет)', 'Property ID', 'Все CIAN ID', 'Перепубликаций', 'Мин. замеченная цена, ₽', 'Макс. замеченная цена, ₽', 'Возможный дубль, %'])
     with database() as conn:
-        for row in conn.execute('''SELECT l.id,l.title,l.price,l.address,l.url,l.first_seen,l.last_seen,l.complex_name,l.area,l.floor,l.metro,l.metro_time,l.source,l.last_imported,l.card_text,l.description,l.metro_walk_minutes,l.review_status,u.display_name,l.review_updated_at,l.realtor_status,l.realtor_comment,r.display_name,l.realtor_updated_at FROM listings l LEFT JOIN users u ON u.id=l.review_updated_by LEFT JOIN users r ON r.id=l.realtor_updated_by ORDER BY l.price'''):
-            sheet.append([("'" + value if isinstance(value, str) and value.startswith(('=', '+', '-', '@')) else value) for value in (*row, mortgage_payment(row['price']))])
+        items = sorted(grouped_listing_data(conn), key=lambda item: (item['price'] is None, item['price'] or 0))
+        for item in items:
+            candidate = item.get('duplicate_candidate') or {}
+            values = [
+                item['id'], item['title'], item['price'], item['address'], item['url'], item['first_seen'], item['last_seen'],
+                item['complex_name'], item['area'], item['floor'], item['metro'], item['metro_time'], item['source'],
+                item['last_imported'], item['card_text'], item['description'], item['metro_walk_minutes'], item['review_status'],
+                item.get('review_updated_by_name'), item['review_updated_at'], item['realtor_status'], item['realtor_comment'],
+                item.get('realtor_updated_by_name'), item['realtor_updated_at'], item['mortgage_payment'], item.get('property_id'),
+                ' → '.join(item.get('listing_ids') or [item['id']]), item.get('relist_count', 0), item.get('price_min'),
+                item.get('price_max'), candidate.get('confidence'),
+            ]
+            sheet.append([("'" + value if isinstance(value, str) and value.startswith(('=', '+', '-', '@')) else value) for value in values])
     sheet.freeze_panes = 'A2'
     sheet.auto_filter.ref = sheet.dimensions
     stream = io.BytesIO()
