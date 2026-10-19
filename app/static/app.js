@@ -3,7 +3,7 @@ const form = document.querySelector('#filters');
 const button = document.querySelector('#collect');
 const status = document.querySelector('#status');
 const message = document.querySelector('#page-message');
-const records = new Map(), rows = new Map(), pendingReviews = new Set(), pendingRealtors = new Set();
+const records = new Map(), rows = new Map(), pendingReviews = new Set(), pendingRealtors = new Set(), pendingDuplicates = new Set();
 const labels = {new:'НОВОЕ', liked:'Понравилось', viewed:'Просмотрено', rejected:'Не подходит'};
 const realtorLabels = {pending:'Не оценено',approved:'Одобрено',rejected:'Отбраковано'};
 let selectedSort = null;
@@ -49,9 +49,16 @@ function makeRow(id) {
   cells[0].append(link);
   cells[1].className = 'object-cell';
   const title = document.createElement('strong'), address = document.createElement('small');
+  const propertyHistory = document.createElement('small'); propertyHistory.className = 'property-history';
   const details = document.createElement('details'), summary = document.createElement('summary'), text = document.createElement('p');
   summary.textContent = 'Текст карточки / описание'; details.append(summary, text);
-  cells[1].append(title, address, details);
+  const duplicateBox = document.createElement('div'); duplicateBox.className = 'duplicate-box';
+  const duplicateText = document.createElement('div');
+  const duplicateActions = document.createElement('div'); duplicateActions.className = 'duplicate-actions';
+  const duplicateSame = document.createElement('button'); duplicateSame.type='button'; duplicateSame.textContent='Да, тот же объект';
+  const duplicateDifferent = document.createElement('button'); duplicateDifferent.type='button'; duplicateDifferent.className='secondary'; duplicateDifferent.textContent='Нет, другая квартира';
+  duplicateActions.append(duplicateSame,duplicateDifferent); duplicateBox.append(duplicateText,duplicateActions);
+  cells[1].append(title, address, propertyHistory, details, duplicateBox);
   const date = document.createElement('time'), clock = document.createElement('small'); cells[8].append(date, clock);
   const badge = document.createElement('span'); badge.className = 'review-label';
   const select = document.createElement('select'); select.className = 'review-select';
@@ -80,11 +87,14 @@ function makeRow(id) {
   const realtorSaving = document.createElement('small'); realtorSaving.setAttribute('aria-live','polite');
   realtorForm.append(realtorSelect,comment,saveRealtor,realtorSaving); editor.append(editorSummary,realtorForm);
   cells[10].append(realtorBadge,commentPreview,commentDetails,realtorMeta,editor);
-  const entry = {row,cells,link,title,address,details,text,date,clock,badge,select,meta,saving,
+  const entry = {row,cells,link,title,address,propertyHistory,details,text,duplicateBox,duplicateText,duplicateActions,
+    duplicateSame,duplicateDifferent,date,clock,badge,select,meta,saving,
     realtorBadge,commentPreview,commentDetails,commentText,realtorMeta,editor,realtorSelect,comment,saveRealtor,realtorSaving,dirty:false};
   comment.addEventListener('input', () => {entry.dirty=true;});
   realtorSelect.addEventListener('change', () => {entry.dirty=true;});
   realtorForm.addEventListener('submit', event => {event.preventDefault(); changeRealtor(id);});
+  duplicateSame.addEventListener('click', () => decideDuplicate(id,'same'));
+  duplicateDifferent.addEventListener('click', () => decideDuplicate(id,'different'));
   for (const field of [realtorSelect,comment]) field.addEventListener('blur', () => renderListings());
   rows.set(id, entry);
   return entry;
@@ -98,6 +108,18 @@ function renderRow(item, forceReview = false) {
   setText(address, item.address);
   const description = item.card_text || item.description || '';
   details.hidden = !description; setText(text, description);
+  const ids = item.listing_ids || [item.id];
+  const relists = Number(item.relist_count || 0);
+  setText(entry.propertyHistory, relists ? 'Перепубликовано ' + relists + ' ' + (relists === 1 ? 'раз' : 'раза') + ' · CIAN: ' + ids.join(' → ') : '');
+  entry.propertyHistory.hidden = !relists;
+  const candidate = item.duplicate_candidate;
+  entry.duplicateBox.hidden = !candidate;
+  if (candidate) {
+    setText(entry.duplicateText, 'Возможно, это перепубликация CIAN ' + candidate.candidate_listing_id + ' · совпадение ' + candidate.confidence + '%');
+    const canDecide = ['admin','reviewer'].includes(currentUser?.role);
+    entry.duplicateActions.hidden = !canDecide;
+    entry.duplicateSame.disabled = entry.duplicateDifferent.disabled = pendingDuplicates.has(item.id);
+  }
   setText(cells[2], item.price == null ? '—' : new Intl.NumberFormat('ru-RU', {style:'currency', currency:'RUB', maximumFractionDigits:0}).format(item.price));
   const payment = XataReview.mortgage(item.price);
   setText(cells[3], payment == null ? '—' : (payment > 0 ? '≈ ' : '') + (Math.round(payment / 100) * 100).toLocaleString('ru-RU') + ' ₽/мес.');
@@ -147,7 +169,7 @@ function renderListings() {
   const counts = XataReview.counts(ordered);
   for (const item of ordered) { const row = renderRow(item); if (!row.parentNode) body.append(row); }
   // Keep focused status controls/details in place during refresh.
-  if (!pendingReviews.size && !pendingRealtors.size && !document.activeElement?.matches('.review-select,.realtor-select,.realtor-comment')) {
+  if (!pendingReviews.size && !pendingRealtors.size && !pendingDuplicates.size && !document.activeElement?.matches('.review-select,.realtor-select,.realtor-comment')) {
     let cursor = body.firstElementChild;
     for (const item of ordered) {
       const row = rows.get(item.id).row;
@@ -194,6 +216,21 @@ async function changeRealtor(id) {
   } catch(error) { setText(message,error.message); message.className='error'; }
   finally {pendingRealtors.delete(id); renderListings();}
 }
+async function decideDuplicate(id, decision) {
+  if (pendingDuplicates.has(id)) return;
+  pendingDuplicates.add(id); renderRow(records.get(id));
+  try {
+    await responseJson(await apiFetch('/api/listings/' + encodeURIComponent(id) + '/duplicate-decision', jsonOptions('POST',{decision})));
+    setText(message, decision === 'same' ? 'Перепубликации объединены в один объект.' : 'Объявления отмечены как разные квартиры.');
+    message.className='';
+    await refresh();
+  } catch(error) {
+    setText(message,error.message); message.className='error';
+  } finally {
+    pendingDuplicates.delete(id);
+    renderListings();
+  }
+}
 for (const node of document.querySelectorAll('[data-sort]')) node.addEventListener('click', () => {
   selectedSort = XataReview.cycleSort(selectedSort,node.dataset.sort);
   for (const header of document.querySelectorAll('[data-sort]')) {
@@ -213,6 +250,15 @@ async function refresh() {
     const criteria = data.criteria || {max_price:14500000,metro_minutes:20};
     setText(document.querySelector('#criteria-price'),'Бюджет до ' + (criteria.max_price / 1000000).toLocaleString('ru-RU') + ' млн ₽');
     setText(document.querySelector('#criteria-metro'),'До метро — не более ' + criteria.metro_minutes + ' минут пешком');
+    const incoming = new Set(data.listings.map(item => String(item.id)));
+    for (const id of Array.from(records.keys())) {
+      if (!incoming.has(String(id))) {
+        records.delete(id);
+        const entry = rows.get(id);
+        if (entry) entry.row.remove();
+        rows.delete(id);
+      }
+    }
     for (const item of data.listings) acceptListing(item);
     renderListings();
     if (currentUser.role !== 'admin') return;
