@@ -22,7 +22,8 @@ from typing import Literal
 from app.auth import AuthStore, UNSAFE
 from app.migrations import migrate_listings
 from app.property_match import (best_match, candidate_rows, create_property, record_price,
-                                sync_property_reviews, touch_property)
+                                sync_property_reviews, touch_property, listing_match, identity_revision, bump_identity,
+                                root_property, distinct_properties, save_decision, merge_properties)
 from app.criteria import browser_criteria
 from app.finance import mortgage_payment
 from app import source
@@ -121,66 +122,81 @@ def listing_data(row):
     return item
 
 
-def property_listing_data(conn, row):
+def property_context(conn):
+    """Batch reads: /api/state does not execute queries per property row."""
+    rows = conn.execute(LISTING_QUERY).fetchall()
+    props = {row['id']:dict(row) for row in conn.execute('SELECT * FROM properties')}
+    by_id = {row['id']:row for row in rows}
+    groups, prices = {}, {}
+    for row in rows:
+        groups.setdefault(row['property_id'], []).append(row)
+    for entries in groups.values():
+        entries.sort(key=lambda row: (row['first_seen'] or '', row['id']))
+    for row in conn.execute('SELECT listing_id,property_id,observed_at,price FROM price_history ORDER BY observed_at,id'):
+        prices.setdefault(row['property_id'], []).append(dict(row))
+    def root(pid):
+        seen = set()
+        while pid in props and props[pid]['merged_into'] is not None and pid not in seen:
+            seen.add(pid)
+            pid = props[pid]['merged_into']
+        return pid
+    negative = {tuple(sorted((row[0],row[1]))) for row in conn.execute('''SELECT a.property_id,b.property_id
+        FROM identity_decisions d JOIN listings a ON a.id=d.listing_a JOIN listings b ON b.id=d.listing_b
+        WHERE d.decision='different' ''')}
+    pending = {}
+    for dc in conn.execute("SELECT * FROM duplicate_candidates WHERE decision='pending' ORDER BY confidence DESC,id"):
+        source_row = by_id.get(dc['listing_id'])
+        if source_row is None:
+            continue
+        source, target = source_row['property_id'], root(dc['candidate_property_id'])
+        target_row = by_id.get(props.get(target,{}).get('current_listing_id'))
+        if source == target or target_row is None or tuple(sorted((source,target))) in negative:
+            continue
+        choice = {'id':dc['id'],'listing_id':dc['listing_id'],'confidence':dc['confidence'],
+                  'source_property_id':source,'candidate_property_id':target,
+                  'candidate_listing_id':target_row['id'],'candidate_url':target_row['url']}
+        if not any(item['candidate_property_id']==target for item in pending.get(source,[])):
+            pending.setdefault(source,[]).append(choice)
+    return {'rows':rows,'props':props,'groups':groups,'prices':prices,'pending':pending,
+            'revision':identity_revision(conn),'by_id':by_id}
+
+
+def property_listing_data(conn, row, context=None):
+    context = context or property_context(conn)
     item = listing_data(row)
-    property_id = item.get('property_id')
-    if not property_id:
-        item.update(listing_ids=[item['id']], relist_count=0, price_min=item['price'], price_max=item['price'],
-                    duplicate_candidate=None)
-        return item
-    history = conn.execute(
-        'SELECT id,first_seen,last_seen,price FROM listings WHERE property_id=? ORDER BY COALESCE(first_seen,last_seen),id',
-        (property_id,),
-    ).fetchall()
+    pid = item['property_id']
+    history = context['groups'].get(pid, [row])
+    current = context['props'][pid]['current_listing_id']
     item['listing_ids'] = [entry['id'] for entry in history]
-    item['relist_count'] = max(0, len(history) - 1)
-    first_seen = [entry['first_seen'] for entry in history if entry['first_seen']]
-    if first_seen:
-        item['first_seen'] = min(first_seen)
-    prices = [entry['price'] for entry in conn.execute(
-        'SELECT price FROM price_history WHERE property_id=? ORDER BY id', (property_id,)
-    ).fetchall()]
-    item['price_min'] = min(prices) if prices else item['price']
-    item['price_max'] = max(prices) if prices else item['price']
-    pending = conn.execute(
-        """SELECT dc.*,l.id AS candidate_listing_id
-           FROM duplicate_candidates dc
-           JOIN listings l ON l.property_id=dc.candidate_property_id
-           WHERE dc.decision='pending'
-             AND dc.listing_id IN (SELECT id FROM listings WHERE property_id=?)
-           ORDER BY dc.confidence DESC,COALESCE(l.last_seen,l.first_seen) DESC
-           LIMIT 1""",
-        (property_id,),
-    ).fetchone()
-    item['duplicate_candidate'] = ({
-        'confidence': pending['confidence'],
-        'candidate_property_id': pending['candidate_property_id'],
-        'candidate_listing_id': pending['candidate_listing_id'],
-    } if pending else None)
+    item['relist_count'] = max(0,len(history)-1)
+    item['publication_history'] = [
+        {'id':entry['id'],'first_seen':entry['first_seen'],'last_seen':entry['last_seen'],
+         'status':'current' if entry['id']==current else 'historical'} for entry in history]
+    dates = [entry['first_seen'] for entry in history if entry['first_seen']]
+    item['first_seen'] = min(dates) if dates else item['first_seen']
+    prices = context['prices'].get(pid,[])
+    item['price_history'] = prices
+    item['price_min'] = min(entry['price'] for entry in prices) if prices else item['price']
+    item['price_max'] = max(entry['price'] for entry in prices) if prices else item['price']
+    item['duplicate_candidate'] = next(iter(context['pending'].get(pid,[])),None)
+    item['identity_revision'] = context['revision']
     return item
 
 
 def current_property_row(conn, property_id):
-    return conn.execute(
-        LISTING_QUERY + ' WHERE l.property_id=? ORDER BY COALESCE(l.last_seen,l.first_seen) DESC,l.id DESC LIMIT 1',
-        (property_id,),
-    ).fetchone()
+    property_id = root_property(conn,property_id)
+    return conn.execute(LISTING_QUERY + ''' JOIN properties p ON p.current_listing_id=l.id
+                        WHERE p.id=? AND l.property_id=p.id''',(property_id,)).fetchone()
 
 
 def grouped_listing_data(conn):
-    rows = conn.execute(LISTING_QUERY).fetchall()
-    representatives = {}
-    for row in rows:
-        key = row['property_id'] if row['property_id'] is not None else 'listing:' + row['id']
-        current = representatives.get(key)
-        stamp = row['last_seen'] or row['first_seen'] or ''
-        current_stamp = (current['last_seen'] or current['first_seen'] or '') if current else ''
-        if current is None or (stamp, row['id']) > (current_stamp, current['id']):
-            representatives[key] = row
-    items = [property_listing_data(conn, row) for row in representatives.values()]
-    items.sort(key=lambda item: item.get('first_seen') or '', reverse=True)
-    rank = {'new': 0, 'liked': 1, 'viewed': 2, 'rejected': 3}
-    items.sort(key=lambda item: rank.get(item.get('review_status'), 9))
+    context = property_context(conn)
+    items = [property_listing_data(conn,context['by_id'][prop['current_listing_id']],context)
+             for prop in context['props'].values()
+             if prop['merged_into'] is None and prop['current_listing_id'] in context['by_id']]
+    items.sort(key=lambda item:item.get('first_seen') or '',reverse=True)
+    rank = {'new':0,'liked':1,'viewed':2,'rejected':3}
+    items.sort(key=lambda item:rank.get(item.get('review_status'),9))
     return items
 
 
@@ -202,52 +218,62 @@ LISTING_FIELDS = ('title', 'price', 'address', 'url', 'complex_name', 'area', 'f
 
 def save_items(conn, items, now, imported=False):
     added = updated = relisted = possible_duplicates = 0
+    items = list(items)
     incoming_ids = {str(item['id']) for item in items}
+    # Freeze the old candidate set once. Two unknown ads in the same batch must
+    # not silently collapse, and large CSVs must not rescan the DB per row.
+    candidates = candidate_rows(conn,incoming_ids)
+    coobserved = {row['property_id'] for row in conn.execute('SELECT id,property_id FROM listings') if str(row['id']) in incoming_ids}
+    claimed_targets = set()
     for item in items:
-        previous = conn.execute('SELECT * FROM listings WHERE id=?', (item['id'],)).fetchone()
-        merged = dict(previous) if previous else {'title': 'Квартира'}
-        merged.update({key: item[key] for key in LISTING_FIELDS if item.get(key) not in (None, '')})
+        previous = conn.execute('SELECT * FROM listings WHERE id=?',(item['id'],)).fetchone()
+        merged = dict(previous) if previous else {'title':'Квартира'}
+        merged.update({key:item[key] for key in LISTING_FIELDS if item.get(key) not in (None,'')})
         if item.get('metro_time'):
             merged['metro_walk_minutes'] = item.get('metro_walk_minutes')
         values = [merged.get(field) for field in LISTING_FIELDS]
         if previous:
-            property_id = previous['property_id']
-            if property_id is None:
-                property_id = create_property(conn, merged, previous['first_seen'] or now)
-                conn.execute('UPDATE listings SET property_id=? WHERE id=?', (property_id, item['id']))
+            pid = previous['property_id']
             conn.execute('UPDATE listings SET ' + ','.join(f'{field}=?' for field in LISTING_FIELDS) +
                          ',last_seen=?,last_imported=? WHERE id=?',
-                         (*values, now, now if imported else previous['last_imported'], item['id']))
-            touch_property(conn, property_id, merged, now)
-            record_price(conn, property_id, item['id'], now, merged.get('price'))
+                         (*values,now,now if imported else previous['last_imported'],item['id']))
+            current = conn.execute('SELECT current_listing_id FROM properties WHERE id=?',(pid,)).fetchone()[0]
+            if current == item['id']:
+                touch_property(conn,pid,merged,now)
+            if item.get('price') is not None:
+                record_price(conn,pid,item['id'],now,item['price'])
             updated += 1
             continue
 
-        match = best_match(merged, candidate_rows(conn, incoming_ids))
-        if match and match[2].auto:
-            property_id = match[0]
+        match = best_match(merged,candidates)
+        automatic = bool(match and match[2].auto and match[0] not in claimed_targets and match[0] not in coobserved)
+        if automatic:
+            pid = match[0]
+            claimed_targets.add(pid)
             relisted += 1
         else:
-            property_id = create_property(conn, merged, now)
+            pid = create_property(conn,merged,now)
             added += 1
-
-        fields = ('id', *LISTING_FIELDS, 'first_seen', 'last_seen', 'last_imported', 'property_id')
-        conn.execute('INSERT INTO listings (' + ','.join(fields) + ') VALUES (' + ','.join('?' for _ in fields) + ')',
-                     (item['id'], *values, now, now, now if imported else None, property_id))
-        touch_property(conn, property_id, merged, now)
-        record_price(conn, property_id, item['id'], now, merged.get('price'))
-
-        if match and match[2].auto:
-            sync_property_reviews(conn, property_id)
+        fields = ('id',*LISTING_FIELDS,'first_seen','last_seen','last_imported','property_id')
+        conn.execute('INSERT INTO listings ('+','.join(fields)+') VALUES ('+','.join('?' for _ in fields)+')',
+                     (item['id'],*values,now,now,now if imported else None,pid))
+        conn.execute('UPDATE properties SET current_listing_id=? WHERE id=?',(item['id'],pid))
+        touch_property(conn,pid,merged,now)
+        record_price(conn,pid,item['id'],now,merged.get('price'))
+        if automatic:
+            sync_property_reviews(conn,pid)
         elif match and match[2].possible:
-            conn.execute(
-                """INSERT OR IGNORE INTO duplicate_candidates(
-                   listing_id,candidate_property_id,confidence,reasons,created_at)
-                   VALUES (?,?,?,?,?)""",
-                (item['id'], match[0], match[2].score, ','.join(match[2].reasons), now),
-            )
+            # Retain competing candidates. The browser acts on the exact candidate
+            # shown, never on whichever row happens to be first at POST time.
+            for candidate_pid,candidate_item in candidates:
+                result = listing_match(merged,candidate_item)
+                if result.possible and result.score >= match[2].score - 15:
+                    conn.execute('''INSERT OR IGNORE INTO duplicate_candidates(
+                        listing_id,candidate_property_id,confidence,reasons,created_at) VALUES (?,?,?,?,?)''',
+                        (item['id'],candidate_pid,min(result.score,84),','.join(result.reasons),now))
             possible_duplicates += 1
-    return {'added': added, 'updated': updated, 'relisted': relisted, 'possible_duplicates': possible_duplicates}
+        bump_identity(conn)
+    return {'added':added,'updated':updated,'relisted':relisted,'possible_duplicates':possible_duplicates}
 
 
 @asynccontextmanager
@@ -338,8 +364,9 @@ def state(user=Depends(auth)):
         conn.execute('BEGIN')
         listings = grouped_listing_data(conn)
         run = conn.execute('SELECT * FROM runs ORDER BY id DESC LIMIT 1').fetchone()
+        revision = identity_revision(conn)
     saved_browser = browser_state()
-    result = {'listings': listings, 'user': user, 'last_success': saved_browser.get('last_success'), 'criteria': browser_criteria()}
+    result = {'listings': listings, 'identity_revision': revision, 'user': user, 'last_success': saved_browser.get('last_success'), 'criteria': browser_criteria()}
     if user['role'] == 'admin':
         result.update(run=dict(run) if run else None, browser=saved_browser)
     return result
@@ -360,9 +387,10 @@ def review_listing(listing_id: str, data: Review, user=Depends(auth)):
         if not target:
             raise HTTPException(404, 'Объявление не найдено')
         property_id = target['property_id']
+        version = conn.execute('SELECT MAX(review_version)+1 FROM listings WHERE property_id=?',(property_id,)).fetchone()[0]
         cursor = conn.execute('''UPDATE listings SET review_status=?,review_updated_at=?,review_updated_by=?,
-                                 review_version=review_version+1 WHERE property_id=?''',
-                              (data.status, timestamp, user['id'], property_id))
+                                 review_version=? WHERE property_id=?''',
+                              (data.status, timestamp, user['id'], version, property_id))
         if not cursor.rowcount:
             raise HTTPException(404, 'Объявление не найдено')
         item = property_listing_data(conn, current_property_row(conn, property_id))
@@ -394,9 +422,10 @@ def realtor_review(listing_id: str, data: RealtorReview, user=Depends(auth)):
         if not target:
             raise HTTPException(404, 'Объявление не найдено')
         property_id = target['property_id']
+        version = conn.execute('SELECT MAX(realtor_version)+1 FROM listings WHERE property_id=?',(property_id,)).fetchone()[0]
         cursor = conn.execute('''UPDATE listings SET realtor_status=?,realtor_comment=?,realtor_updated_at=?,
-                                 realtor_updated_by=?,realtor_version=realtor_version+1 WHERE property_id=?''',
-                              (data.status, data.comment, timestamp, user['id'], property_id))
+                                 realtor_updated_by=?,realtor_version=? WHERE property_id=?''',
+                              (data.status, data.comment, timestamp, user['id'], version, property_id))
         if not cursor.rowcount:
             raise HTTPException(404, 'Объявление не найдено')
         item = property_listing_data(conn, current_property_row(conn, property_id))
@@ -406,56 +435,43 @@ def realtor_review(listing_id: str, data: RealtorReview, user=Depends(auth)):
 
 class DuplicateDecision(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    decision: Literal['same', 'different']
+    decision: Literal['same','different']
+    candidate_id: int = Field(ge=1)
+    source_property_id: int = Field(ge=1)
+    candidate_property_id: int = Field(ge=1)
 
 
 @app.post('/api/listings/{listing_id}/duplicate-decision')
 def duplicate_decision(listing_id: str, data: DuplicateDecision, user=Depends(auth)):
-    if user['role'] not in ('admin', 'reviewer'):
-        raise HTTPException(403, 'Подтверждение дублей доступно семье и администратору')
-    timestamp = datetime.now(timezone.utc).isoformat()
+    if user['role'] not in ('admin','reviewer'):
+        raise HTTPException(403,'Подтверждение дублей доступно семье и администратору')
+    now = datetime.now(timezone.utc).isoformat()
     with database() as conn:
         conn.execute('BEGIN IMMEDIATE')
-        listing = conn.execute('SELECT * FROM listings WHERE id=?', (listing_id,)).fetchone()
-        if not listing:
-            raise HTTPException(404, 'Объявление не найдено')
-        candidate = conn.execute(
-            """SELECT * FROM duplicate_candidates
-               WHERE listing_id=? AND decision='pending'
-               ORDER BY confidence DESC,id DESC LIMIT 1""",
-            (listing_id,),
-        ).fetchone()
-        if not candidate:
-            raise HTTPException(409, 'Для объявления нет ожидающего подтверждения дубля')
-
-        if data.decision == 'different':
-            conn.execute(
-                """UPDATE duplicate_candidates SET decision='rejected',decided_at=?,decided_by=?
-                   WHERE id=?""",
-                (timestamp, user['id'], candidate['id']),
-            )
-            item = property_listing_data(conn, current_property_row(conn, listing['property_id']))
-            return item
-
-        source_property = listing['property_id']
-        target_property = candidate['candidate_property_id']
-        if source_property != target_property:
-            conn.execute('UPDATE listings SET property_id=? WHERE property_id=?', (target_property, source_property))
-            conn.execute('UPDATE price_history SET property_id=? WHERE property_id=?', (target_property, source_property))
-            conn.execute('DELETE FROM duplicate_candidates WHERE candidate_property_id=?', (source_property,))
-            sync_property_reviews(conn, target_property)
-            target_row = current_property_row(conn, target_property)
-            if target_row:
-                touch_property(conn, target_property, dict(target_row), timestamp)
-            if not conn.execute('SELECT 1 FROM listings WHERE property_id=?', (source_property,)).fetchone():
-                conn.execute('DELETE FROM properties WHERE id=?', (source_property,))
-        conn.execute(
-            """UPDATE duplicate_candidates SET decision='confirmed',decided_at=?,decided_by=?
-               WHERE id=?""",
-            (timestamp, user['id'], candidate['id']),
-        )
-        item = property_listing_data(conn, current_property_row(conn, target_property))
-    log.info('Duplicate decision user_id=%s listing_id=%s decision=%s', user['id'], listing_id, data.decision)
+        listing = conn.execute('SELECT property_id FROM listings WHERE id=?',(listing_id,)).fetchone()
+        if listing is None:
+            raise HTTPException(404,'Объявление не найдено')
+        source_pid = listing['property_id']
+        candidate = conn.execute('''SELECT dc.* FROM duplicate_candidates dc JOIN listings l ON l.id=dc.listing_id
+                    WHERE dc.id=? AND dc.decision='pending' AND l.property_id=?''',
+                                 (data.candidate_id,source_pid)).fetchone()
+        if candidate is None:
+            raise HTTPException(409,'Предложение уже изменилось. Обновите список.')
+        target_pid = root_property(conn,candidate['candidate_property_id'])
+        if (source_pid != data.source_property_id or target_pid != data.candidate_property_id or source_pid==target_pid):
+            raise HTTPException(409,'Связь объектов изменилась. Обновите список.')
+        if data.decision=='same' and distinct_properties(conn,source_pid,target_pid):
+            raise HTTPException(409,'Эти объекты ранее отмечены как разные квартиры')
+        anchor = current_property_row(conn,target_pid)
+        save_decision(conn,candidate['listing_id'],anchor['id'],data.decision,now,user['id'])
+        if data.decision=='same':
+            merge_properties(conn,source_pid,target_pid,now)
+        else:
+            bump_identity(conn)
+        conn.execute('UPDATE duplicate_candidates SET decision=?,decided_at=?,decided_by=? WHERE id=?',
+                     ('confirmed' if data.decision=='same' else 'rejected',now,user['id'],candidate['id']))
+        item = property_listing_data(conn,current_property_row(conn,target_pid if data.decision=='same' else source_pid))
+    log.info('Duplicate decision user_id=%s listing_id=%s decision=%s',user['id'],listing_id,data.decision)
     return item
 
 
@@ -470,7 +486,7 @@ def run_collection(run_id, filters, kind='online'):
                          (now, 'Сбор завершён. Критерии пешей доступности и вторичного жилья следует сверить в объявлении.', len(items), run_id))
         if kind == 'browser':
             update_browser(status='authorized', message='Авторизован', last_success=now,
-                           new_count=result['added'], last_error=None)
+                           new_count=result['added'], relisted_count=result['relisted'], last_error=None)
     except Exception as exc:
         message = str(exc) if isinstance(exc, source.SourceError) else 'Внутренняя ошибка сборщика; подробности в журнале сервера.'
         blocked = isinstance(exc, source.SourceBlocked)
@@ -621,11 +637,15 @@ async def preview_import(request: Request):
         # Bound disk consumption, including repeated previews never confirmed.
         if conn.execute('SELECT count(*) FROM import_previews').fetchone()[0] >= 10:
             raise HTTPException(429, 'Слишком много предварительных просмотров. Подождите 30 минут.')
-        existing = {row['id'] for row in conn.execute('SELECT id FROM listings')}
+        conn.execute('SAVEPOINT preview_matching')
+        try:
+            counts = save_items(conn,items,datetime.now(timezone.utc).isoformat(),imported=True)
+        finally:
+            conn.execute('ROLLBACK TO preview_matching')
+            conn.execute('RELEASE preview_matching')
         conn.execute('INSERT INTO import_previews VALUES (?,?,?)', (token, now, json.dumps(items, ensure_ascii=False)))
-    updated = sum(item['id'] in existing for item in items)
     return {'token': token, 'found': parsed['found'], 'unique': len(items), 'duplicates': parsed['duplicates'],
-            'added': len(items) - updated, 'updated': updated, 'fields': parsed['fields'],
+            **counts, 'fields': parsed['fields'],
             'sample': items[:5], 'expires_in': 1800}
 
 
@@ -657,7 +677,7 @@ def export():
     book = Workbook()
     sheet = book.active
     sheet.title = 'Объявления'
-    sheet.append(['ID', 'Название', 'Цена, ₽', 'Адрес', 'Ссылка', 'Впервые найдено (UTC)', 'Последнее обновление (UTC)', 'ЖК', 'Площадь, м²', 'Этаж', 'Метро', 'Время до метро', 'Источник', 'Последний импорт (UTC)', 'Текст карточки', 'Описание', 'Пешком до метро, мин', 'Статус', 'Статус изменил', 'Дата изменения статуса (UTC)', 'Оценка риелтора', 'Комментарий риелтора', 'Риелторскую оценку изменил', 'Дата риелторской оценки (UTC)', 'Ипотека / мес. (6 млн / 18% / 15 лет)', 'Property ID', 'Все CIAN ID', 'Перепубликаций', 'Мин. замеченная цена, ₽', 'Макс. замеченная цена, ₽', 'Возможный дубль, %'])
+    sheet.append(['ID', 'Название', 'Цена, ₽', 'Адрес', 'Ссылка', 'Впервые найдено (UTC)', 'Последнее обновление (UTC)', 'ЖК', 'Площадь, м²', 'Этаж', 'Метро', 'Время до метро', 'Источник', 'Последний импорт (UTC)', 'Текст карточки', 'Описание', 'Пешком до метро, мин', 'Статус', 'Статус изменил', 'Дата изменения статуса (UTC)', 'Оценка риелтора', 'Комментарий риелтора', 'Риелторскую оценку изменил', 'Дата риелторской оценки (UTC)', 'Ипотека / мес. (6 млн / 18% / 15 лет)', 'Property ID', 'Все CIAN ID', 'Перепубликаций', 'Мин. замеченная цена, ₽', 'Макс. замеченная цена, ₽', 'Возможный дубль, %', 'История цен (UTC)', 'Публикации: даты и состояние'])
     with database() as conn:
         items = sorted(grouped_listing_data(conn), key=lambda item: (item['price'] is None, item['price'] or 0))
         for item in items:
@@ -670,6 +690,8 @@ def export():
                 item.get('realtor_updated_by_name'), item['realtor_updated_at'], item['mortgage_payment'], item.get('property_id'),
                 ' → '.join(item.get('listing_ids') or [item['id']]), item.get('relist_count', 0), item.get('price_min'),
                 item.get('price_max'), candidate.get('confidence'),
+                '\n'.join(f"{entry['observed_at']} · CIAN {entry['listing_id']} · {entry['price']} ₽" for entry in item['price_history']),
+                '\n'.join(f"CIAN {entry['id']} · {entry['first_seen']} — {entry['last_seen']} · {entry['status']}" for entry in item['publication_history']),
             ]
             sheet.append([("'" + value if isinstance(value, str) and value.startswith(('=', '+', '-', '@')) else value) for value in values])
     sheet.freeze_panes = 'A2'

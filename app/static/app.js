@@ -6,7 +6,7 @@ const message = document.querySelector('#page-message');
 const records = new Map(), rows = new Map(), pendingReviews = new Set(), pendingRealtors = new Set(), pendingDuplicates = new Set();
 const labels = {new:'НОВОЕ', liked:'Понравилось', viewed:'Просмотрено', rejected:'Не подходит'};
 const realtorLabels = {pending:'Не оценено',approved:'Одобрено',rejected:'Отбраковано'};
-let selectedSort = null;
+let selectedSort = null, identityRevision = 0, refreshPromise = null;
 let currentUser = null, csrfToken = '', pending = false, refreshing = false, selectedFilter = 'all';
 
 function setText(node, value) {
@@ -51,6 +51,7 @@ function makeRow(id) {
   const title = document.createElement('strong'), address = document.createElement('small');
   const propertyHistory = document.createElement('small'); propertyHistory.className = 'property-history';
   const details = document.createElement('details'), summary = document.createElement('summary'), text = document.createElement('p');
+  details.className = 'card-details';
   summary.textContent = 'Текст карточки / описание'; details.append(summary, text);
   const duplicateBox = document.createElement('div'); duplicateBox.className = 'duplicate-box';
   const duplicateText = document.createElement('div');
@@ -58,7 +59,12 @@ function makeRow(id) {
   const duplicateSame = document.createElement('button'); duplicateSame.type='button'; duplicateSame.textContent='Да, тот же объект';
   const duplicateDifferent = document.createElement('button'); duplicateDifferent.type='button'; duplicateDifferent.className='secondary'; duplicateDifferent.textContent='Нет, другая квартира';
   duplicateActions.append(duplicateSame,duplicateDifferent); duplicateBox.append(duplicateText,duplicateActions);
-  cells[1].append(title, address, propertyHistory, details, duplicateBox);
+  const historyDetails = document.createElement('details'), historySummary = document.createElement('summary'), historyText = document.createElement('p');
+  historyDetails.className = 'publication-details'; historySummary.textContent='Публикации и цены';
+  historyDetails.append(historySummary,historyText);
+  const duplicateCompare = document.createElement('a'); duplicateCompare.target='_blank'; duplicateCompare.rel='noopener noreferrer';
+  duplicateCompare.textContent='Сравнить на ЦИАН'; duplicateBox.insertBefore(duplicateCompare,duplicateActions);
+  cells[1].append(title,address,propertyHistory,details,historyDetails,duplicateBox);
   const date = document.createElement('time'), clock = document.createElement('small'); cells[8].append(date, clock);
   const badge = document.createElement('span'); badge.className = 'review-label';
   const select = document.createElement('select'); select.className = 'review-select';
@@ -87,7 +93,7 @@ function makeRow(id) {
   const realtorSaving = document.createElement('small'); realtorSaving.setAttribute('aria-live','polite');
   realtorForm.append(realtorSelect,comment,saveRealtor,realtorSaving); editor.append(editorSummary,realtorForm);
   cells[10].append(realtorBadge,commentPreview,commentDetails,realtorMeta,editor);
-  const entry = {row,cells,link,title,address,propertyHistory,details,text,duplicateBox,duplicateText,duplicateActions,
+  const entry = {row,cells,link,title,address,propertyHistory,details,text,historyDetails,historyText,duplicateCompare,duplicateBox,duplicateText,duplicateActions,
     duplicateSame,duplicateDifferent,date,clock,badge,select,meta,saving,
     realtorBadge,commentPreview,commentDetails,commentText,realtorMeta,editor,realtorSelect,comment,saveRealtor,realtorSaving,dirty:false};
   comment.addEventListener('input', () => {entry.dirty=true;});
@@ -100,7 +106,13 @@ function makeRow(id) {
   return entry;
 }
 function renderRow(item, forceReview = false) {
-  const entry = rows.get(item.id) || makeRow(item.id);
+  const id = XataReview.key(item);
+  const entry = rows.get(id) || makeRow(id);
+  entry.row.dataset.listingId = item.id;
+  entry.row.dataset.propertyId = item.property_id || '';
+  entry.select.setAttribute('aria-label','Статус объявления ' + item.id);
+  entry.realtorSelect.setAttribute('aria-label','Оценка риелтора ' + item.id);
+  entry.comment.setAttribute('aria-label','Комментарий риелтора ' + item.id);
   const {row,cells,link,title,address,details,text,date,clock,badge,select,meta,saving} = entry;
   setText(link, item.id);
   if (safeCianUrl(item.url)) link.href = item.url; else link.removeAttribute('href');
@@ -112,13 +124,20 @@ function renderRow(item, forceReview = false) {
   const relists = Number(item.relist_count || 0);
   setText(entry.propertyHistory, relists ? 'Перепубликовано ' + relists + ' ' + (relists === 1 ? 'раз' : 'раза') + ' · CIAN: ' + ids.join(' → ') : '');
   entry.propertyHistory.hidden = !relists;
+  const publications = (item.publication_history || []).map(entry => 'CIAN ' + entry.id + ' · ' +
+    (entry.status === 'current' ? 'Текущая публикация' : 'Историческая публикация') + ' · ' + entry.first_seen + ' — ' + entry.last_seen);
+  const prices = (item.price_history || []).map(entry => new Date(entry.observed_at).toLocaleString('ru-RU') + ' · CIAN ' +
+    entry.listing_id + ' · ' + Number(entry.price).toLocaleString('ru-RU') + ' ₽');
+  setText(entry.historyText,publications.join('\n') + (prices.length ? '\nИстория цен:\n' + prices.join('\n') : ''));
+  entry.historyDetails.hidden = !publications.length && !prices.length;
   const candidate = item.duplicate_candidate;
   entry.duplicateBox.hidden = !candidate;
   if (candidate) {
     setText(entry.duplicateText, 'Возможно, это перепубликация CIAN ' + candidate.candidate_listing_id + ' · совпадение ' + candidate.confidence + '%');
+    if (safeCianUrl(candidate.candidate_url)) entry.duplicateCompare.href=candidate.candidate_url; else entry.duplicateCompare.removeAttribute('href');
     const canDecide = ['admin','reviewer'].includes(currentUser?.role);
     entry.duplicateActions.hidden = !canDecide;
-    entry.duplicateSame.disabled = entry.duplicateDifferent.disabled = pendingDuplicates.has(item.id);
+    entry.duplicateSame.disabled = entry.duplicateDifferent.disabled = pendingDuplicates.has(id);
   }
   setText(cells[2], item.price == null ? '—' : new Intl.NumberFormat('ru-RU', {style:'currency', currency:'RUB', maximumFractionDigits:0}).format(item.price));
   const payment = XataReview.mortgage(item.price);
@@ -133,10 +152,10 @@ function renderRow(item, forceReview = false) {
   row.className = 'review-' + review;
   row.dataset.reviewStatus = review;
   setText(badge, labels[review]);
-  if (forceReview || (!pendingReviews.has(item.id) && document.activeElement !== select)) select.value = review;
+  if (forceReview || (!pendingReviews.has(id) && document.activeElement !== select)) select.value = review;
   select.hidden = currentUser?.role === 'realtor';
-  select.disabled = pendingReviews.has(item.id) || currentUser?.role === 'realtor';
-  setText(saving, pendingReviews.has(item.id) ? 'Сохраняем…' : '');
+  select.disabled = pendingReviews.has(id) || currentUser?.role === 'realtor';
+  setText(saving, pendingReviews.has(id) ? 'Сохраняем…' : '');
   let author = item.review_updated_by_name || item.review_updated_by_username;
   if (!author && item.review_updated_by) author = 'Пользователь #' + item.review_updated_by;
   const changed = item.review_updated_at ? new Date(item.review_updated_at) : null;
@@ -154,12 +173,12 @@ function renderRow(item, forceReview = false) {
   entry.realtorMeta.title = realtorDate ? realtorDate.toLocaleString('ru-RU') : '';
   const canRealtor = ['admin','realtor'].includes(currentUser?.role);
   entry.editor.hidden = !canRealtor;
-  entry.realtorSelect.disabled = entry.comment.disabled = entry.saveRealtor.disabled = !canRealtor || pendingRealtors.has(item.id);
-  if (!entry.dirty && !pendingRealtors.has(item.id)) {
+  entry.realtorSelect.disabled = entry.comment.disabled = entry.saveRealtor.disabled = !canRealtor || pendingRealtors.has(id);
+  if (!entry.dirty && !pendingRealtors.has(id)) {
     entry.realtorSelect.value = realtor;
     entry.comment.value = item.realtor_comment || '';
   }
-  setText(entry.realtorSaving, pendingRealtors.has(item.id) ? 'Сохраняем…' : '');
+  setText(entry.realtorSaving, pendingRealtors.has(id) ? 'Сохраняем…' : '');
   row.hidden = selectedFilter !== 'all' && selectedFilter !== review;
   return row;
 }
@@ -172,7 +191,7 @@ function renderListings() {
   if (!pendingReviews.size && !pendingRealtors.size && !pendingDuplicates.size && !document.activeElement?.matches('.review-select,.realtor-select,.realtor-comment')) {
     let cursor = body.firstElementChild;
     for (const item of ordered) {
-      const row = rows.get(item.id).row;
+      const row = rows.get(XataReview.key(item)).row;
       if (row !== cursor) body.insertBefore(row, cursor);
       cursor = row.nextElementSibling;
     }
@@ -187,43 +206,49 @@ function renderListings() {
   setText(empty, counts.all ? 'Нет объявлений с выбранным статусом.' : 'Пока нет сохранённых объявлений.');
 }
 function acceptListing(item) {
-  records.set(item.id, XataReview.merge(records.get(item.id), item));
+  if (Number(item.identity_revision || 0) < identityRevision) return;
+  identityRevision = Math.max(identityRevision,Number(item.identity_revision || 0));
+  const key = XataReview.key(item);
+  records.set(key,XataReview.merge(records.get(key),item));
 }
 async function changeReview(id, nextStatus) {
-  if (pendingReviews.has(id)) return;
+  if (pendingReviews.has(id) || !records.has(id)) return;
   pendingReviews.add(id); renderRow(records.get(id));
   try {
-    const saved = await responseJson(await apiFetch('/api/listings/' + encodeURIComponent(id) + '/review', jsonOptions('POST', {status:nextStatus})));
+    const saved = await responseJson(await apiFetch('/api/listings/' + encodeURIComponent(records.get(id).id) + '/review', jsonOptions('POST', {status:nextStatus})));
     acceptListing(saved);
     setText(message, 'Статус сохранён.'); message.className = '';
   } catch(error) {
     setText(message, error.message); message.className = 'error';
   } finally {
     pendingReviews.delete(id);
-    renderRow(records.get(id), true);
+    if (records.has(id)) renderRow(records.get(id),true);
     renderListings();
   }
 }
 for (const node of document.querySelectorAll('[data-review-filter]')) node.addEventListener('click', () => { selectedFilter = node.dataset.reviewFilter; renderListings(); });
 async function changeRealtor(id) {
-  if (pendingRealtors.has(id)) return;
+  if (pendingRealtors.has(id) || !records.has(id)) return;
   const entry = rows.get(id), data = {status:entry.realtorSelect.value,comment:entry.comment.value};
   pendingRealtors.add(id); renderRow(records.get(id));
   try {
-    const saved = await responseJson(await apiFetch('/api/listings/' + encodeURIComponent(id) + '/realtor-review', jsonOptions('POST',data)));
+    const saved = await responseJson(await apiFetch('/api/listings/' + encodeURIComponent(records.get(id).id) + '/realtor-review', jsonOptions('POST',data)));
     acceptListing(saved); entry.dirty = false;
     setText(message,'Оценка риелтора сохранена.'); message.className='';
   } catch(error) { setText(message,error.message); message.className='error'; }
   finally {pendingRealtors.delete(id); renderListings();}
 }
 async function decideDuplicate(id, decision) {
-  if (pendingDuplicates.has(id)) return;
+  if (pendingDuplicates.has(id) || !records.has(id)) return;
   pendingDuplicates.add(id); renderRow(records.get(id));
   try {
-    await responseJson(await apiFetch('/api/listings/' + encodeURIComponent(id) + '/duplicate-decision', jsonOptions('POST',{decision})));
+    const candidate = records.get(id).duplicate_candidate;
+    const saved = await responseJson(await apiFetch('/api/listings/' + encodeURIComponent(records.get(id).id) + '/duplicate-decision',
+      jsonOptions('POST',{decision,candidate_id:candidate.id,source_property_id:candidate.source_property_id,candidate_property_id:candidate.candidate_property_id})));
+    identityRevision = Math.max(identityRevision,Number(saved.identity_revision || 0));
     setText(message, decision === 'same' ? 'Перепубликации объединены в один объект.' : 'Объявления отмечены как разные квартиры.');
     message.className='';
-    await refresh();
+    await refresh(true);
   } catch(error) {
     setText(message,error.message); message.className='error';
   } finally {
@@ -240,8 +265,16 @@ for (const node of document.querySelectorAll('[data-sort]')) node.addEventListen
   }
   renderListings();
 });
-async function refresh() {
-  if (refreshing) return;
+async function refresh(force=false) {
+  if (refreshPromise) {
+    await refreshPromise;
+    if (force) return refresh();
+    return;
+  }
+  refreshPromise = refreshState();
+  try {await refreshPromise;} finally {refreshPromise=null;}
+}
+async function refreshState() {
   refreshing = true;
   try {
     const data = await responseJson(await apiFetch('/api/state'));
@@ -250,16 +283,14 @@ async function refresh() {
     const criteria = data.criteria || {max_price:14500000,metro_minutes:20};
     setText(document.querySelector('#criteria-price'),'Бюджет до ' + (criteria.max_price / 1000000).toLocaleString('ru-RU') + ' млн ₽');
     setText(document.querySelector('#criteria-metro'),'До метро — не более ' + criteria.metro_minutes + ' минут пешком');
-    const incoming = new Set(data.listings.map(item => String(item.id)));
-    for (const id of Array.from(records.keys())) {
-      if (!incoming.has(String(id))) {
-        records.delete(id);
-        const entry = rows.get(id);
-        if (entry) entry.row.remove();
-        rows.delete(id);
-      }
+    if (Number(data.identity_revision || 0) < identityRevision) return;
+    const next = XataReview.reconcile(records,data.listings,identityRevision,data.identity_revision);
+    identityRevision = Number(data.identity_revision || 0);
+    records.clear();
+    for (const [key,item] of next) records.set(key,item);
+    for (const [key,entry] of rows) {
+      if (!records.has(key)) {entry.row.remove(); rows.delete(key);}
     }
-    for (const item of data.listings) acceptListing(item);
     renderListings();
     if (currentUser.role !== 'admin') return;
     const browser = data.browser || {};
@@ -280,7 +311,7 @@ form.addEventListener('submit', async event => {
   try {
     await responseJson(await apiFetch('/api/browser/collect', jsonOptions('POST', {})));
   } catch(error) { status.className = 'error'; setText(status, error.message); }
-  finally { pending = false; await refresh(); }
+  finally { pending = false; await refresh(true); }
 });
 let browserRefreshPending = false;
 async function refreshBrowser() {
@@ -323,7 +354,7 @@ fileInput.addEventListener('change', async () => {
   try {
     const data = await responseJson(await apiFetch('/api/import/preview', {method:'POST',headers:{'Content-Type':'text/csv'},body:file}));
     importToken = data.token;
-    document.querySelector('#import-counts').textContent = `${file.name}: найдено строк — ${data.found}, уникальных объявлений — ${data.unique}, повторов в файле — ${data.duplicates}. Новых — ${data.added}, для обновления — ${data.updated}.`;
+    document.querySelector('#import-counts').textContent = `${file.name}: найдено строк — ${data.found}, уникальных объявлений — ${data.unique}, повторов в файле — ${data.duplicates}. Новых объектов — ${data.added}, перепубликаций — ${data.relisted || 0}, для обновления — ${data.updated}.`;
     const list = document.querySelector('#import-sample'); list.replaceChildren();
     for (const item of data.sample) {
       const li = document.createElement('li'); li.textContent = `${item.id} · ${item.address || item.title || 'Квартира'} · ${item.price == null ? 'Цена не указана' : item.price.toLocaleString('ru-RU') + ' ₽'}`; list.append(li);
@@ -344,8 +375,8 @@ importConfirm.addEventListener('click', async () => {
   try {
     const data = await responseJson(await apiFetch('/api/import/confirm', {method:'POST', headers:{'Content-Type':'application/json'},body:JSON.stringify({token:importToken})}));
     importToken = null; previewPanel.hidden = true;
-    importMessage(`Импорт завершён: добавлено ${data.added}, обновлено ${data.updated}. Старые объявления сохранены.`);
-    await refresh();
+    importMessage(`Импорт завершён: новых объектов ${data.added}, перепубликаций ${data.relisted || 0}, обновлено ${data.updated}. Старые объявления сохранены.`);
+    await refresh(true);
   } catch (error) { importMessage(error.message, true); }
   finally { importConfirm.disabled = false; importSelect.disabled = false; importCancel.disabled = false; }
 });
@@ -424,7 +455,7 @@ async function boot() {
   try {
     const me = await responseJson(await apiFetch('/api/auth/me'));
     csrfToken = me.csrf_token; identify(me.user);
-    await refresh(); await refreshBrowser();
+    await refresh(true); await refreshBrowser();
     setInterval(refresh, 5000); setInterval(refreshBrowser, 15000);
   } catch(error) { setText(message, error.message); message.className = 'error'; }
 }

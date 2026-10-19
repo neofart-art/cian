@@ -3,8 +3,17 @@ from app.property_match import listing_match
 from tests.test_multiuser import multi_app
 
 
+def decide(admin, listing_id, decision):
+    row = next(item for item in admin.get('/api/state').json()['listings'] if str(listing_id) in item['listing_ids'])
+    candidate = row['duplicate_candidate']
+    return admin.post('/api/listings/'+str(listing_id)+'/duplicate-decision',json={
+        'decision':decision,'candidate_id':candidate['id'],'source_property_id':candidate['source_property_id'],
+        'candidate_property_id':candidate['candidate_property_id']})
+
+
 def sample(item_id, address='Москва, Ленинградский проспект, д. 10, корп. 1',
            area=38.7, floor='7/16', price=12900000, description=None):
+    detail = ' На лоджии установлен дубовый шкаф, ванная облицована мозаикой, потолки 2.85 метра.'
     return {
         'id': str(item_id),
         'url': 'https://www.cian.ru/sale/flat/' + str(item_id) + '/',
@@ -16,8 +25,8 @@ def sample(item_id, address='Москва, Ленинградский просп
         'floor': floor,
         'metro': 'Сокол',
         'metro_time': '8 мин. пешком',
-        'description': description or 'Светлая квартира, большая кухня, окна во двор, один собственник.',
-        'card_text': description or 'Светлая квартира, большая кухня, окна во двор, один собственник.',
+        'description': (description or 'Светлая квартира, большая кухня, окна во двор, один собственник.') + detail,
+        'card_text': (description or 'Светлая квартира, большая кухня, окна во двор, один собственник.') + detail,
     }
 
 
@@ -103,7 +112,7 @@ def test_ambiguous_duplicate_requires_manual_decision(multi_app):
     assert 65 <= item['duplicate_candidate']['confidence'] < 85
     assert item['duplicate_candidate']['candidate_listing_id'] == '800'
 
-    rejected = admin.post('/api/listings/801/duplicate-decision', json={'decision':'different'})
+    rejected = decide(admin,'801','different')
     assert rejected.status_code == 200
     item = next(entry for entry in admin.get('/api/state').json()['listings'] if entry['id'] == '801')
     assert item['duplicate_candidate'] is None
@@ -115,7 +124,7 @@ def test_ambiguous_duplicate_requires_manual_decision(multi_app):
         main.save_items(conn, [old2], '2026-09-02T10:00:00+00:00')
         main.save_items(conn, [dict(old2, id='901', url='https://www.cian.ru/sale/flat/901/', price=11600000)],
                         '2026-10-18T11:00:00+00:00')
-    assert admin.post('/api/listings/901/duplicate-decision', json={'decision':'same'}).status_code == 200
+    assert decide(admin,'901','same').status_code == 200
     state = admin.get('/api/state').json()['listings']
     merged = next(entry for entry in state if entry['id'] == '901')
     assert merged['listing_ids'] == ['900','901']

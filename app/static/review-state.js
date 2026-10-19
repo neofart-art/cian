@@ -5,6 +5,13 @@
   const realtorFields = ['realtor_status','realtor_comment','realtor_updated_at','realtor_updated_by','realtor_updated_by_name','realtor_updated_by_username','realtor_version'];
   const rank = {new:0, liked:1, viewed:2, rejected:3}, realtorRank = {pending:0, approved:1, rejected:2};
   const collator = new Intl.Collator('ru', {sensitivity:'base'});
+  function key(item) {
+    return item.property_id == null ? 'listing:' + item.id : 'property:' + item.property_id;
+  }
+  function reconcile(previous, incoming, previousRevision, incomingRevision) {
+    if (Number(incomingRevision || 0) < Number(previousRevision || 0)) return new Map(previous);
+    return new Map(incoming.map(item => [key(item), merge(previous.get(key(item)),item)]));
+  }
   function merge(previous, incoming) {
     const result = {...incoming};
     if (previous) for (const [version,fields] of [['review_version',reviewFields],['realtor_version',realtorFields]]) {
@@ -76,7 +83,7 @@
     for (const item of items) { result.all++; result[item.review_status || 'new']++; }
     return result;
   }
-  const api = {merge,ordered,cycleSort,counts,mortgage,minutes};
+  const api = {key,reconcile,merge,ordered,cycleSort,counts,mortgage,minutes};
   root.XataReview = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

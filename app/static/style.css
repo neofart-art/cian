@@ -66,3 +66,7 @@ footer{font-size:13px}
 .duplicate-actions .secondary{border:1px solid #c9b993}
 @media(max-width:1000px){.brand-logo{height:52px;max-width:220px}}
 @media(max-width:480px){.brand-logo{height:44px;max-width:150px}.brand{gap:8px}}
+
+.publication-details p{white-space:pre-wrap;overflow-wrap:anywhere}.duplicate-box>a{display:inline-block;margin-top:5px}
+
+@media(max-width:480px){header>.brand{flex:0 0 auto}header>.identity{flex:1 1 0;max-width:none;min-width:0}#identity{max-width:100%}}

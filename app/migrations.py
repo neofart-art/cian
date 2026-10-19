@@ -3,7 +3,7 @@ import re
 from datetime import datetime, timezone
 
 from app.csv_source import parse_card_text, is_publication_time
-from app.property_match import create_property, listing_match, record_price, sync_property_reviews
+from app.property_match import create_property, record_price, root_property, save_decision, bump_identity
 
 
 def quote(name):
@@ -119,53 +119,65 @@ def migrate_listings(database):
         conn.execute('CREATE INDEX IF NOT EXISTS duplicate_candidates_listing_idx ON duplicate_candidates(listing_id,decision)')
         conn.execute('CREATE INDEX IF NOT EXISTS price_history_property_idx ON price_history(property_id,id)')
 
+        property_columns = {row['name'] for row in conn.execute('PRAGMA table_info(properties)')}
+        for name, kind in {'current_listing_id':'TEXT REFERENCES listings(id)',
+                           'merged_into':'INTEGER REFERENCES properties(id)'}.items():
+            if name not in property_columns:
+                conn.execute('ALTER TABLE properties ADD COLUMN ' + name + ' ' + kind)
+        conn.execute('CREATE TABLE IF NOT EXISTS property_state(id INTEGER PRIMARY KEY CHECK(id=1),revision INTEGER NOT NULL)')
+        conn.execute('INSERT OR IGNORE INTO property_state VALUES (1,0)')
+        conn.execute('''CREATE TABLE IF NOT EXISTS listing_price_state(
+            listing_id TEXT PRIMARY KEY REFERENCES listings(id),price INTEGER NOT NULL,observed_at TEXT NOT NULL)''')
+        conn.execute('''CREATE TABLE IF NOT EXISTS identity_decisions(
+            id INTEGER PRIMARY KEY,listing_a TEXT NOT NULL REFERENCES listings(id),listing_b TEXT NOT NULL REFERENCES listings(id),
+            decision TEXT NOT NULL CHECK(decision IN ('same','different')),decided_at TEXT NOT NULL,
+            decided_by INTEGER REFERENCES users(id))''')
+        conn.execute('CREATE INDEX IF NOT EXISTS identity_decisions_pair ON identity_decisions(listing_a,listing_b,decision)')
+        conn.execute('''CREATE TABLE IF NOT EXISTS property_merge_audit(
+            id INTEGER PRIMARY KEY,source_property_id INTEGER NOT NULL REFERENCES properties(id),
+            target_property_id INTEGER NOT NULL REFERENCES properties(id),listing_id TEXT NOT NULL REFERENCES listings(id),
+            merged_at TEXT NOT NULL,review_snapshot TEXT NOT NULL)''')
+
         now = datetime.now(timezone.utc).isoformat()
         for row in conn.execute('SELECT * FROM listings WHERE property_id IS NULL ORDER BY COALESCE(first_seen,last_seen),id').fetchall():
             property_id = create_property(conn, dict(row), row['first_seen'] or row['last_seen'] or now)
             conn.execute('UPDATE listings SET property_id=? WHERE id=?', (property_id, row['id']))
 
         conn.execute('CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)')
-        if not conn.execute("SELECT 1 FROM schema_migrations WHERE name='phase3_property_backfill'").fetchone():
-            ids = [row['id'] for row in conn.execute(
-                'SELECT id FROM listings ORDER BY COALESCE(first_seen,last_seen),id'
-            ).fetchall()]
-            for listing_id in ids:
-                current = conn.execute('SELECT * FROM listings WHERE id=?', (listing_id,)).fetchone()
-                if not current or not current['first_seen'] or current['property_id'] is None:
-                    continue
-                best = None
-                seen_properties = set()
-                for candidate in conn.execute(
-                    """SELECT * FROM listings
-                       WHERE id<>? AND property_id IS NOT NULL
-                         AND COALESCE(last_seen,first_seen) < ?
-                       ORDER BY COALESCE(last_seen,first_seen) DESC,id DESC""",
-                    (listing_id, current['first_seen']),
-                ).fetchall():
-                    if candidate['property_id'] == current['property_id'] or candidate['property_id'] in seen_properties:
-                        continue
-                    seen_properties.add(candidate['property_id'])
-                    result = listing_match(dict(current), dict(candidate))
-                    if result.auto and (best is None or result.score > best[1].score):
-                        best = (candidate, result)
-                if best:
-                    target = best[0]['property_id']
-                    source = current['property_id']
-                    conn.execute('UPDATE listings SET property_id=? WHERE property_id=?', (target, source))
-                    conn.execute('UPDATE price_history SET property_id=? WHERE property_id=?', (target, source))
-                    sync_property_reviews(conn, target)
-                    if not conn.execute('SELECT 1 FROM listings WHERE property_id=?', (source,)).fetchone():
-                        conn.execute('DELETE FROM properties WHERE id=?', (source,))
-            conn.execute('INSERT INTO schema_migrations VALUES (?,?)',
-                         ('phase3_property_backfill', now))
+        # Existing reviewed rows must not be matched destructively at startup.
+        # Give each legacy listing its own property; only future, unambiguous
+        # relistings can auto-join. Already-confirmed Phase 3 groups stay intact.
+        conn.execute('INSERT OR IGNORE INTO schema_migrations VALUES (?,?)', ('phase3_property_backfill', now))
+        for prop in conn.execute('SELECT id FROM properties WHERE current_listing_id IS NULL AND merged_into IS NULL').fetchall():
+            row = conn.execute('SELECT id FROM listings WHERE property_id=? ORDER BY first_seen DESC,rowid DESC LIMIT 1',
+                               (prop['id'],)).fetchone()
+            if row:
+                conn.execute('UPDATE properties SET current_listing_id=? WHERE id=?',(row['id'],prop['id']))
 
         if not conn.execute("SELECT 1 FROM schema_migrations WHERE name='phase3_price_seed'").fetchone():
             for row in conn.execute(
                 'SELECT id,property_id,first_seen,last_seen,price FROM listings WHERE property_id IS NOT NULL AND price IS NOT NULL ORDER BY COALESCE(first_seen,last_seen),id'
             ).fetchall():
-                record_price(conn, row['property_id'], row['id'], row['first_seen'] or row['last_seen'] or now, row['price'])
+                record_price(conn, row['property_id'], row['id'], row['last_seen'] or row['first_seen'] or now, row['price'])
             conn.execute('INSERT INTO schema_migrations VALUES (?,?)',
                          ('phase3_price_seed', now))
+        # Populate the per-listing observation baseline without replaying prices
+        # as new events on every refresh or restart.
+        conn.execute('''INSERT OR IGNORE INTO listing_price_state(listing_id,price,observed_at)
+                        SELECT id,price,COALESCE(last_seen,first_seen,?) FROM listings WHERE price IS NOT NULL''', (now,))
+        if not conn.execute("SELECT 1 FROM schema_migrations WHERE name='phase3_safe_identity_v1'").fetchone():
+            # Preserve old manual overrides using stable Cian IDs. Property IDs
+            # may subsequently become aliases; no decision is deleted.
+            for decision in conn.execute("SELECT * FROM duplicate_candidates WHERE decision IN ('confirmed','rejected')").fetchall():
+                target = root_property(conn, decision['candidate_property_id'])
+                anchor = conn.execute('SELECT id FROM listings WHERE property_id=? ORDER BY first_seen DESC,rowid DESC LIMIT 1',
+                                      (target,)).fetchone()
+                if anchor:
+                    save_decision(conn, decision['listing_id'], anchor['id'],
+                                  'same' if decision['decision']=='confirmed' else 'different',
+                                  decision['decided_at'] or now, decision['decided_by'])
+            bump_identity(conn)
+            conn.execute('INSERT INTO schema_migrations VALUES (?,?)',('phase3_safe_identity_v1',now))
         if not conn.execute("SELECT 1 FROM schema_migrations WHERE name='phase2_metro_cleanup'").fetchone():
             for row in conn.execute('SELECT id,metro_time,card_text FROM listings').fetchall():
                 if is_publication_time(row['metro_time']):

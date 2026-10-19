@@ -100,7 +100,7 @@ def test_shared_review_ui_login_roles_refresh_and_layout(tmp_path, monkeypatch):
                 assert await link.get_attribute('target') == '_blank'
                 assert await link.get_attribute('rel') == 'noopener noreferrer'
                 stale_state = client.get('/api/state').json()
-                await row.locator('.object-cell details').evaluate('el => {el.open=true}')
+                await row.locator('.card-details').evaluate('el => {el.open=true}')
                 await page.evaluate('window.savedRow = document.querySelector(\'tr[data-listing-id="123"]\')')
                 await row.locator('.review-select').select_option('viewed')
                 await expect(row.locator('.review-label')).to_have_text('Просмотрено')
@@ -109,7 +109,7 @@ def test_shared_review_ui_login_roles_refresh_and_layout(tmp_path, monkeypatch):
                 await page.evaluate('refresh()')
                 assert stale_injected == 1
                 await expect(row.locator('.review-label')).to_have_text('Просмотрено')
-                assert await row.locator('.object-cell details').evaluate('el => el.open')
+                assert await row.locator('.card-details').evaluate('el => el.open')
                 assert await page.evaluate('window.savedRow === document.querySelector(\'tr[data-listing-id="123"]\')')
                 before = state_reads
                 await page.locator('[data-review-filter="new"]').click()
@@ -182,4 +182,106 @@ def test_shared_review_ui_login_roles_refresh_and_layout(tmp_path, monkeypatch):
                 assert failures == []
                 await context.close()
                 await browser.close()
+        asyncio.run(scenario())
+
+
+
+def test_property_identity_relisting_and_late_poll_after_manual_merge(tmp_path,monkeypatch):
+    from tests.test_phase3 import sample
+    monkeypatch.setenv('DATA_DIR',str(tmp_path));monkeypatch.setenv('APP_USER','owner')
+    monkeypatch.setenv('APP_PASSWORD','long-test-password');monkeypatch.setenv('BROWSER_SCHEDULE_ENABLED','false')
+    monkeypatch.delenv('PUBLIC_URL',raising=False)
+    from app import main
+    importlib.reload(main)
+    monkeypatch.setattr(main.CianBrowserSource,'status',lambda self:{'status':'authorized','message':'Авторизован'})
+    with main.database() as conn:
+        main.save_items(conn,[sample('7000')],'2026-10-01T10:00:00+00:00')
+    with TestClient(main.app,base_url='https://xata.test') as client:
+        sign_in(client)
+        assert client.post('/api/listings/7000/review',json={'status':'liked'}).status_code==200
+        async def scenario():
+            from playwright.async_api import async_playwright,expect
+            hold=False
+            captured=asyncio.Event();release=asyncio.Event();decided=asyncio.Event()
+            old_revision=0
+            async def bridge(route):
+                nonlocal hold,old_revision
+                request=route.request;parsed=urlsplit(request.url)
+                assert parsed.hostname=='xata.test'
+                path=parsed.path+('?' + parsed.query if parsed.query else '')
+                if path=='/api/state' and hold:
+                    hold=False
+                    stale=client.get(path).json()
+                    old_revision=stale['identity_revision']
+                    captured.set()
+                    await release.wait()
+                    await route.fulfill(status=200,content_type='application/json',body=json.dumps(stale))
+                    return
+                headers={key:value for key,value in request.headers.items()
+                         if key.lower() in ('content-type','origin','sec-fetch-site','x-csrf-token')}
+                response=client.request(request.method,path,headers=headers,content=request.post_data_buffer,follow_redirects=False)
+                forwarded={key:value for key,value in response.headers.items()
+                           if key.lower() not in ('set-cookie','content-length','content-encoding','transfer-encoding')}
+                await route.fulfill(status=response.status_code,headers=forwarded,body=response.content)
+                if path.endswith('/duplicate-decision'):
+                    assert response.status_code==200
+                    decided.set()
+            async with async_playwright() as playwright:
+                browser=await playwright.chromium.launch(headless=True)
+                context=await browser.new_context(viewport={'width':1440,'height':1100})
+                await context.route('**/*',bridge)
+                page=await context.new_page()
+                errors=[];page.on('pageerror',lambda error:errors.append(str(error)))
+                await page.goto('https://xata.test/')
+                await expect(page.locator('#listings tr')).to_have_count(1)
+                row=page.locator('tr[data-listing-id="7000"]')
+                await page.evaluate("window.beforeRelist=document.querySelector('#listings tr')")
+                await row.locator('.realtor-editor > summary').click()
+                await row.locator('.realtor-comment').fill('Черновик после перепубликации')
+                with main.database() as conn:
+                    main.save_items(conn,[sample('7001',price=12500000)],'2026-10-18T10:00:00+00:00')
+                await page.evaluate('refresh(true)')
+                await expect(page.locator('tr[data-listing-id="7000"]')).to_have_count(0)
+                row=page.locator('tr[data-listing-id="7001"]')
+                await expect(row.locator('.realtor-comment')).to_have_value('Черновик после перепубликации')
+                assert await page.evaluate("window.beforeRelist===document.querySelector('#listings tr')")
+                assert await row.locator('.realtor-editor').evaluate('el=>el.open')
+                await row.locator('.realtor-select').select_option('approved')
+                await row.locator('.realtor-editor button').click()
+                await expect(row.locator('.realtor-meta')).not_to_have_text('')
+                await expect(row.locator('.review-label')).to_have_text('Понравилось')
+                with main.database() as conn:
+                    main.save_items(conn,[sample('7002',area=39.4,price=12300000)],'2026-10-19T10:00:00+00:00')
+                await page.evaluate('refresh(true)')
+                await expect(page.locator('#listings tr')).to_have_count(2)
+                await page.wait_for_function('refreshPromise===null')
+                hold=True
+                await page.evaluate('void refresh()')
+                await asyncio.wait_for(captured.wait(),5)
+                await page.locator('tr[data-listing-id="7002"] .duplicate-actions button').first.click()
+                await asyncio.wait_for(decided.wait(),5)
+                await page.wait_for_function('(revision)=>identityRevision>revision',arg=old_revision)
+                release.set()
+                await page.evaluate('refresh(true)')
+                await expect(page.locator('#listings tr')).to_have_count(1)
+                row=page.locator('tr[data-listing-id="7002"]')
+                await expect(row.locator('.duplicate-box')).to_be_hidden()
+                await expect(row.locator('.review-label')).to_have_text('Понравилось')
+                await expect(row.locator('.comment-preview')).to_contain_text('Черновик после перепубликации')
+                await row.locator('.publication-details > summary').click()
+                for listing in ('7000','7001','7002'):
+                    await expect(row.locator('.publication-details p')).to_contain_text('CIAN '+listing)
+                await expect(row.locator('.publication-details p')).to_contain_text('История цен')
+                await row.locator('.review-select').select_option('viewed')
+                await expect(row.locator('.review-label')).to_have_text('Просмотрено')
+                assert await page.locator('.brand-logo').evaluate('el=>el.complete&&el.naturalWidth>0')
+                assert await page.locator('.brand-logo').evaluate('el=>getComputedStyle(el).height')=='58px'
+                for width in (390,320):
+                    await page.set_viewport_size({'width':width,'height':844})
+                    assert await page.evaluate('document.documentElement.scrollWidth<=innerWidth')
+                    brand=await page.locator('header .brand').bounding_box()
+                    identity=await page.locator('header .identity').bounding_box()
+                    assert brand['x']+brand['width']<=identity['x']+1
+                assert errors==[]
+                await context.close();await browser.close()
         asyncio.run(scenario())

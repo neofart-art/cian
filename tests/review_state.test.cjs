@@ -76,3 +76,22 @@ test('annuity uses 6m down, 18 percent and 180 months', () => {
   assert.ok(Math.abs(state.mortgage(12000000)-96625.26236476943)<0.00001);
   assert.ok(state.mortgage(13000000)>state.mortgage(12000000));
 });
+
+test('property key survives a new Cian ID, with independent review revisions', () => {
+  const old={id:'100',property_id:37,review_status:'liked',review_version:9,realtor_status:'approved',realtor_comment:'Сохранено',realtor_version:5};
+  const incoming={id:'200',property_id:37,price:12500000,review_status:'new',review_version:8,realtor_status:'pending',realtor_version:4};
+  const next=state.reconcile(new Map([[state.key(old),old]]),[incoming],1,2);
+  assert.equal(next.size,1);
+  const item=next.get(state.key(old));
+  assert.equal(item.id,'200'); assert.equal(item.price,12500000);
+  assert.equal(item.review_status,'liked'); assert.equal(item.realtor_comment,'Сохранено');
+});
+test('a delayed state cannot resurrect properties after manual merge', () => {
+  const a={id:'1',property_id:1},b={id:'2',property_id:2};
+  const merged={...b,property_id:1,review_status:'liked',review_version:100};
+  const before=new Map([[state.key(a),a],[state.key(b),b]]);
+  const after=state.reconcile(before,[merged],10,11);
+  assert.equal(after.size,1);
+  const stale=state.reconcile(after,[a,b],11,10);
+  assert.deepEqual([...stale],[...after]);
+});
