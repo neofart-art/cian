@@ -53,3 +53,16 @@ footer{font-size:13px}
   h2{font-size:20px}
   .export{font-size:14px}
 }
+
+
+/* XATA brand */
+.brand{display:flex;align-items:center;gap:18px;color:inherit;text-decoration:none;min-width:0;letter-spacing:0}
+.brand-logo{display:block;width:auto;height:58px;max-width:260px;object-fit:contain}
+.brand span{margin-left:0}
+.property-history{display:block;margin-top:7px;color:#68756c;font-size:13px;line-height:1.4}
+.duplicate-box{margin-top:8px;padding:8px 9px;border:1px solid #d7b06f;border-radius:7px;background:#fff4dc;color:#6c501c;font-size:13px}
+.duplicate-actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:7px}
+.duplicate-actions button{font-size:13px;min-height:30px;padding:6px 9px}
+.duplicate-actions .secondary{border:1px solid #c9b993}
+@media(max-width:1000px){.brand-logo{height:52px;max-width:220px}}
+@media(max-width:480px){.brand-logo{height:44px;max-width:150px}.brand{gap:8px}}
