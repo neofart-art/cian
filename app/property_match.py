@@ -152,6 +152,9 @@ def listing_match(item, candidate):
 
     floor_a, floor_b = _first_floor(item.get("floor")), _first_floor(candidate.get("floor"))
     floor_same = False
+    totals = [re.search(r"/\s*(\d{1,3})", str(row.get("floor") or "")) for row in (item,candidate)]
+    if all(totals) and totals[0][1] != totals[1][1]:
+        return MatchResult(0, ("building-floors-different",), False)
     if floor_a is not None and floor_b is not None:
         if floor_a == floor_b:
             score += 15

@@ -240,6 +240,10 @@ async function changeRealtor(id) {
 }
 async function decideDuplicate(id, decision) {
   if (pendingDuplicates.has(id) || !records.has(id)) return;
+  if (rows.get(id)?.dirty) {
+    setText(message,'Сначала сохраните комментарий риелтора перед решением по дублю.'); message.className='error';
+    return;
+  }
   pendingDuplicates.add(id); renderRow(records.get(id));
   try {
     const candidate = records.get(id).duplicate_candidate;

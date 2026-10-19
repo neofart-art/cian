@@ -254,6 +254,14 @@ def test_property_identity_relisting_and_late_poll_after_manual_merge(tmp_path,m
                     main.save_items(conn,[sample('7002',area=39.4,price=12300000)],'2026-10-19T10:00:00+00:00')
                 await page.evaluate('refresh(true)')
                 await expect(page.locator('#listings tr')).to_have_count(2)
+                source=page.locator('tr[data-listing-id="7002"]')
+                await source.locator('.realtor-editor > summary').click()
+                await source.locator('.realtor-comment').fill('Несохранённый комментарий')
+                await source.locator('.duplicate-actions button').first.click()
+                await expect(page.locator('#page-message')).to_contain_text('Сначала сохраните')
+                await expect(page.locator('#listings tr')).to_have_count(2)
+                await source.locator('.realtor-editor button').click()
+                await expect(source.locator('.realtor-meta')).not_to_have_text('')
                 await page.wait_for_function('refreshPromise===null')
                 hold=True
                 await page.evaluate('void refresh()')
@@ -267,7 +275,7 @@ def test_property_identity_relisting_and_late_poll_after_manual_merge(tmp_path,m
                 row=page.locator('tr[data-listing-id="7002"]')
                 await expect(row.locator('.duplicate-box')).to_be_hidden()
                 await expect(row.locator('.review-label')).to_have_text('Понравилось')
-                await expect(row.locator('.comment-preview')).to_contain_text('Черновик после перепубликации')
+                await expect(row.locator('.comment-preview')).to_contain_text('Несохранённый комментарий')
                 await row.locator('.publication-details > summary').click()
                 for listing in ('7000','7001','7002'):
                     await expect(row.locator('.publication-details p')).to_contain_text('CIAN '+listing)

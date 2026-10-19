@@ -360,3 +360,48 @@ def test_phase3_schema_failure_rolls_back_all_new_tables(phase2_database,monkeyp
         assert [dict(row) for row in conn.execute('SELECT * FROM listings')]==before
         assert not conn.execute("SELECT 1 FROM sqlite_master WHERE name='properties'").fetchone()
         assert conn.execute('PRAGMA foreign_keys').fetchone()[0]==1
+
+
+
+def test_conflicting_total_floors_prevents_automatic_identity():
+    assert not listing_match(sample('1',floor='7/16'),sample('2',floor='7/17')).auto
+
+
+def test_upgrade_from_existing_phase3_preserves_manual_rejection_and_prices(phase2_database):
+    database=phase2_database
+    with database() as conn:
+        conn.executescript("""
+        CREATE TABLE properties(id INTEGER PRIMARY KEY AUTOINCREMENT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,
+            canonical_address TEXT,canonical_area REAL,canonical_floor TEXT,canonical_complex_name TEXT);
+        ALTER TABLE listings ADD COLUMN property_id INTEGER REFERENCES properties(id);
+        CREATE TABLE duplicate_candidates(id INTEGER PRIMARY KEY AUTOINCREMENT,listing_id TEXT NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
+            candidate_property_id INTEGER NOT NULL REFERENCES properties(id) ON DELETE CASCADE,confidence INTEGER NOT NULL CHECK(confidence BETWEEN 0 AND 100),
+            reasons TEXT NOT NULL DEFAULT '',decision TEXT NOT NULL DEFAULT 'pending' CHECK(decision IN ('pending','confirmed','rejected')),
+            created_at TEXT NOT NULL,decided_at TEXT,decided_by INTEGER REFERENCES users(id),UNIQUE(listing_id,candidate_property_id));
+        CREATE TABLE price_history(id INTEGER PRIMARY KEY AUTOINCREMENT,property_id INTEGER NOT NULL REFERENCES properties(id) ON DELETE CASCADE,
+            listing_id TEXT NOT NULL REFERENCES listings(id) ON DELETE CASCADE,observed_at TEXT NOT NULL,price INTEGER NOT NULL);
+        INSERT INTO properties VALUES (91,'2026-10-01','2026-10-02','Москва',38.7,'7/16','Тест');
+        INSERT INTO properties VALUES (92,'2026-10-03','2026-10-04','Москва',38.7,'7/16','Тест');
+        UPDATE listings SET property_id=CASE id WHEN '501' THEN 91 ELSE 92 END;
+        INSERT INTO duplicate_candidates VALUES (77,'502',91,80,'address','rejected','2026-10-04','2026-10-05',17);
+        INSERT INTO price_history VALUES (31,91,'501','2026-10-02',12900000);
+        INSERT INTO price_history VALUES (32,92,'502','2026-10-04',12900000);
+        INSERT INTO schema_migrations VALUES ('phase3_property_backfill','2026');
+        INSERT INTO schema_migrations VALUES ('phase3_price_seed','2026');
+        """)
+        before=[tuple(row) for row in conn.execute('SELECT * FROM duplicate_candidates')]
+        prices=[tuple(row) for row in conn.execute('SELECT * FROM price_history')]
+    from app import main
+    importlib.reload(main)
+    with database() as conn:
+        assert [tuple(row) for row in conn.execute('SELECT * FROM duplicate_candidates')]==before
+        assert [tuple(row) for row in conn.execute('SELECT * FROM price_history')]==prices
+        decision=conn.execute('SELECT * FROM identity_decisions').fetchone()
+        assert (decision['listing_a'],decision['listing_b'],decision['decision'],decision['decided_by'])==('501','502','different',17)
+        assert conn.execute('SELECT current_listing_id FROM properties WHERE id=91').fetchone()[0]=='501'
+        with pytest.raises(ValueError,match='разные квартиры'):
+            merge_properties(conn,92,91,'2026-10-19')
+    importlib.reload(main)
+    with database() as conn:
+        assert conn.execute('SELECT count(*) FROM identity_decisions').fetchone()[0]==1
+        assert not conn.execute('PRAGMA foreign_key_check').fetchall()
