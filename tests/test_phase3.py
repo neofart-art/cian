@@ -1,5 +1,6 @@
 """Phase 3: real-property grouping, relisting detection and local branding."""
 from app.property_match import listing_match
+from tests.test_multiuser import multi_app
 
 
 def sample(item_id, address='Москва, Ленинградский проспект, д. 10, корп. 1',
