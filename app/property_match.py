@@ -158,3 +158,93 @@ def best_match(item, candidates):
         if best is None or result.score > best[2].score:
             best = (property_id, candidate, result)
     return best
+
+
+def create_property(conn, item, now):
+    cursor = conn.execute(
+        """INSERT INTO properties(created_at,updated_at,canonical_address,canonical_area,canonical_floor,canonical_complex_name)
+           VALUES (?,?,?,?,?,?)""",
+        (now, now, item.get("address"), item.get("area"), item.get("floor"), item.get("complex_name")),
+    )
+    return cursor.lastrowid
+
+
+def touch_property(conn, property_id, item, now):
+    conn.execute(
+        """UPDATE properties SET updated_at=?,
+           canonical_address=COALESCE(NULLIF(?,''),canonical_address),
+           canonical_area=COALESCE(?,canonical_area),
+           canonical_floor=COALESCE(NULLIF(?,''),canonical_floor),
+           canonical_complex_name=COALESCE(NULLIF(?,''),canonical_complex_name)
+           WHERE id=?""",
+        (now, item.get("address"), item.get("area"), item.get("floor"), item.get("complex_name"), property_id),
+    )
+
+
+def record_price(conn, property_id, listing_id, observed_at, price):
+    if price is None:
+        return False
+    last = conn.execute(
+        "SELECT price FROM price_history WHERE property_id=? ORDER BY id DESC LIMIT 1", (property_id,)
+    ).fetchone()
+    if last and int(last["price"]) == int(price):
+        return False
+    conn.execute(
+        "INSERT INTO price_history(property_id,listing_id,observed_at,price) VALUES (?,?,?,?)",
+        (property_id, listing_id, observed_at, int(price)),
+    )
+    return True
+
+
+def candidate_rows(conn, incoming_ids=()):
+    """Latest listing per property, excluding properties represented in this input batch."""
+    incoming = {str(value) for value in incoming_ids}
+    excluded_properties = set()
+    if incoming:
+        placeholders = ",".join("?" for _ in incoming)
+        excluded_properties = {
+            row["property_id"] for row in conn.execute(
+                f"SELECT DISTINCT property_id FROM listings WHERE id IN ({placeholders}) AND property_id IS NOT NULL",
+                tuple(incoming),
+            )
+        }
+    rows = conn.execute(
+        "SELECT * FROM listings WHERE property_id IS NOT NULL ORDER BY COALESCE(last_seen,first_seen) DESC,id DESC"
+    ).fetchall()
+    seen = set()
+    result = []
+    for row in rows:
+        property_id = row["property_id"]
+        if property_id in seen or property_id in excluded_properties or str(row["id"]) in incoming:
+            continue
+        seen.add(property_id)
+        result.append((property_id, dict(row)))
+    return result
+
+
+def sync_property_reviews(conn, property_id):
+    """Keep user-owned review fields identical across every publication of a property."""
+    rows = conn.execute(
+        "SELECT * FROM listings WHERE property_id=? ORDER BY COALESCE(last_seen,first_seen) DESC,id DESC",
+        (property_id,),
+    ).fetchall()
+    if not rows:
+        return
+
+    def newest(field):
+        dated = [row for row in rows if row[field]]
+        return max(dated, key=lambda row: row[field]) if dated else rows[0]
+
+    review = newest("review_updated_at")
+    realtor = newest("realtor_updated_at")
+    conn.execute(
+        """UPDATE listings SET
+           review_status=?,review_updated_at=?,review_updated_by=?,review_version=?,
+           realtor_status=?,realtor_comment=?,realtor_updated_at=?,realtor_updated_by=?,realtor_version=?
+           WHERE property_id=?""",
+        (
+            review["review_status"], review["review_updated_at"], review["review_updated_by"], review["review_version"],
+            realtor["realtor_status"], realtor["realtor_comment"], realtor["realtor_updated_at"],
+            realtor["realtor_updated_by"], realtor["realtor_version"], property_id,
+        ),
+    )
