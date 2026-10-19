@@ -21,7 +21,9 @@ from pydantic import BaseModel, Field, ConfigDict, field_validator
 from typing import Literal
 from app.auth import AuthStore, UNSAFE
 from app.migrations import migrate_listings
-from app.property_match import (best_match, candidate_rows, create_property, record_price,\n                                sync_property_reviews, touch_property)\nfrom app.criteria import browser_criteria
+from app.property_match import (best_match, candidate_rows, create_property, record_price,
+                                sync_property_reviews, touch_property)
+from app.criteria import browser_criteria
 from app.finance import mortgage_payment
 from app import source
 from app.csv_source import CianCsvSource, MAX_BYTES
