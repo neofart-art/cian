@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title">
+  <title id="title">ХАТА</title>
+  <g fill="none" stroke="#d7652f" stroke-width="14" stroke-linecap="square" stroke-linejoin="miter">
+    <path d="M18 22 L64 62 L110 22"/>
+    <path d="M25 103 L64 51 L103 103"/>
+    <path d="M103 34 V62"/>
+  </g>
+  <g fill="#2d3130">
+    <rect x="53" y="70" width="9" height="9" rx="1"/>
+    <rect x="66" y="70" width="9" height="9" rx="1"/>
+    <rect x="53" y="83" width="9" height="9" rx="1"/>
+    <rect x="66" y="83" width="9" height="9" rx="1"/>
+  </g>
+</svg>
