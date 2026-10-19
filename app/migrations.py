@@ -3,6 +3,7 @@ import re
 from datetime import datetime, timezone
 
 from app.csv_source import parse_card_text, is_publication_time
+from app.property_match import create_property, listing_match, record_price, sync_property_reviews
 
 
 def quote(name):
@@ -83,7 +84,88 @@ def migrate_listings(database):
         }.items():
             if name not in columns:
                 conn.execute('ALTER TABLE listings ADD COLUMN ' + name + ' ' + definition)
+        conn.execute("""CREATE TABLE IF NOT EXISTS properties(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            canonical_address TEXT,
+            canonical_area REAL,
+            canonical_floor TEXT,
+            canonical_complex_name TEXT
+        )""")
+        columns = {row['name'] for row in conn.execute('PRAGMA table_info(listings)')}
+        if 'property_id' not in columns:
+            conn.execute('ALTER TABLE listings ADD COLUMN property_id INTEGER REFERENCES properties(id)')
+        conn.execute("""CREATE TABLE IF NOT EXISTS duplicate_candidates(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            listing_id TEXT NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
+            candidate_property_id INTEGER NOT NULL REFERENCES properties(id) ON DELETE CASCADE,
+            confidence INTEGER NOT NULL CHECK(confidence BETWEEN 0 AND 100),
+            reasons TEXT NOT NULL DEFAULT '',
+            decision TEXT NOT NULL DEFAULT 'pending' CHECK(decision IN ('pending','confirmed','rejected')),
+            created_at TEXT NOT NULL,
+            decided_at TEXT,
+            decided_by INTEGER REFERENCES users(id),
+            UNIQUE(listing_id,candidate_property_id)
+        )""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS price_history(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            property_id INTEGER NOT NULL REFERENCES properties(id) ON DELETE CASCADE,
+            listing_id TEXT NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
+            observed_at TEXT NOT NULL,
+            price INTEGER NOT NULL
+        )""")
+        conn.execute('CREATE INDEX IF NOT EXISTS listings_property_idx ON listings(property_id,last_seen)')
+        conn.execute('CREATE INDEX IF NOT EXISTS duplicate_candidates_listing_idx ON duplicate_candidates(listing_id,decision)')
+        conn.execute('CREATE INDEX IF NOT EXISTS price_history_property_idx ON price_history(property_id,id)')
+
+        now = datetime.now(timezone.utc).isoformat()
+        for row in conn.execute('SELECT * FROM listings WHERE property_id IS NULL ORDER BY COALESCE(first_seen,last_seen),id').fetchall():
+            property_id = create_property(conn, dict(row), row['first_seen'] or row['last_seen'] or now)
+            conn.execute('UPDATE listings SET property_id=? WHERE id=?', (property_id, row['id']))
+
         conn.execute('CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)')
+        if not conn.execute("SELECT 1 FROM schema_migrations WHERE name='phase3_property_backfill'").fetchone():
+            ids = [row['id'] for row in conn.execute(
+                'SELECT id FROM listings ORDER BY COALESCE(first_seen,last_seen),id'
+            ).fetchall()]
+            for listing_id in ids:
+                current = conn.execute('SELECT * FROM listings WHERE id=?', (listing_id,)).fetchone()
+                if not current or not current['first_seen'] or current['property_id'] is None:
+                    continue
+                best = None
+                seen_properties = set()
+                for candidate in conn.execute(
+                    """SELECT * FROM listings
+                       WHERE id<>? AND property_id IS NOT NULL
+                         AND COALESCE(last_seen,first_seen) < ?
+                       ORDER BY COALESCE(last_seen,first_seen) DESC,id DESC""",
+                    (listing_id, current['first_seen']),
+                ).fetchall():
+                    if candidate['property_id'] == current['property_id'] or candidate['property_id'] in seen_properties:
+                        continue
+                    seen_properties.add(candidate['property_id'])
+                    result = listing_match(dict(current), dict(candidate))
+                    if result.auto and (best is None or result.score > best[1].score):
+                        best = (candidate, result)
+                if best:
+                    target = best[0]['property_id']
+                    source = current['property_id']
+                    conn.execute('UPDATE listings SET property_id=? WHERE property_id=?', (target, source))
+                    conn.execute('UPDATE price_history SET property_id=? WHERE property_id=?', (target, source))
+                    sync_property_reviews(conn, target)
+                    if not conn.execute('SELECT 1 FROM listings WHERE property_id=?', (source,)).fetchone():
+                        conn.execute('DELETE FROM properties WHERE id=?', (source,))
+            conn.execute('INSERT INTO schema_migrations VALUES (?,?)',
+                         ('phase3_property_backfill', now))
+
+        if not conn.execute("SELECT 1 FROM schema_migrations WHERE name='phase3_price_seed'").fetchone():
+            for row in conn.execute(
+                'SELECT id,property_id,first_seen,last_seen,price FROM listings WHERE property_id IS NOT NULL AND price IS NOT NULL ORDER BY COALESCE(first_seen,last_seen),id'
+            ).fetchall():
+                record_price(conn, row['property_id'], row['id'], row['first_seen'] or row['last_seen'] or now, row['price'])
+            conn.execute('INSERT INTO schema_migrations VALUES (?,?)',
+                         ('phase3_price_seed', now))
         if not conn.execute("SELECT 1 FROM schema_migrations WHERE name='phase2_metro_cleanup'").fetchone():
             for row in conn.execute('SELECT id,metro_time,card_text FROM listings').fetchall():
                 if is_publication_time(row['metro_time']):
