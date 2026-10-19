@@ -43,6 +43,17 @@ def normalize_address(value):
     return re.sub(r"[^a-zа-я0-9]+", " ", text).strip()
 
 
+def _building_parts(address):
+    house = re.search(r"(?:^| )д ([0-9]+[a-zа-я]?)\b", address)
+    corpus = re.search(r"(?:^| )корп ([0-9]+[a-zа-я]?)\b", address)
+    structure = re.search(r"(?:^| )стр ([0-9]+[a-zа-я]?)\b", address)
+    return (
+        house.group(1) if house else None,
+        corpus.group(1) if corpus else None,
+        structure.group(1) if structure else None,
+    )
+
+
 def normalize_text(value):
     text = _plain(value)
     text = re.sub(r"https?://\S+", " ", text)
@@ -73,6 +84,13 @@ def listing_match(item, candidate):
     address_a = normalize_address(item.get("address"))
     address_b = normalize_address(candidate.get("address"))
     if address_a and address_b:
+        building_a, building_b = _building_parts(address_a), _building_parts(address_b)
+        if building_a[0] and building_b[0] and building_a[0] != building_b[0]:
+            return MatchResult(0, ("different-building",), False)
+        if building_a[1] and building_b[1] and building_a[1] != building_b[1]:
+            return MatchResult(0, ("different-building",), False)
+        if building_a[2] and building_b[2] and building_a[2] != building_b[2]:
+            return MatchResult(0, ("different-building",), False)
         ratio = _ratio(address_a, address_b)
         if address_a == address_b:
             score += 40
