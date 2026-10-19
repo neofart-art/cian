@@ -23,7 +23,7 @@ from app.auth import AuthStore, UNSAFE
 from app.migrations import migrate_listings
 from app.property_match import (best_match, candidate_rows, create_property, record_price,
                                 sync_property_reviews, touch_property, listing_match, identity_revision, bump_identity,
-                                root_property, distinct_properties, save_decision, merge_properties)
+                                root_property, distinct_properties, save_decision, merge_properties, AUTO_MATCH_MARGIN)
 from app.criteria import browser_criteria
 from app.finance import mortgage_payment
 from app import source
@@ -267,7 +267,7 @@ def save_items(conn, items, now, imported=False):
             # shown, never on whichever row happens to be first at POST time.
             for candidate_pid,candidate_item in candidates:
                 result = listing_match(merged,candidate_item)
-                if result.possible and result.score >= match[2].score - 15:
+                if result.possible and result.score >= match[2].score - AUTO_MATCH_MARGIN:
                     conn.execute('''INSERT OR IGNORE INTO duplicate_candidates(
                         listing_id,candidate_property_id,confidence,reasons,created_at) VALUES (?,?,?,?,?)''',
                         (item['id'],candidate_pid,min(result.score,84),','.join(result.reasons),now))

@@ -405,3 +405,30 @@ def test_upgrade_from_existing_phase3_preserves_manual_rejection_and_prices(phas
     with database() as conn:
         assert conn.execute('SELECT count(*) FROM identity_decisions').fetchone()[0]==1
         assert not conn.execute('PRAGMA foreign_key_check').fetchall()
+
+
+
+def test_weaker_but_plausible_second_apartment_still_requires_confirmation():
+    # A 100 vs 84 score must not silently erase evidence of two apartments:
+    # nearby measured areas are common after a seller rewrites an advertisement.
+    first=sample('1')
+    second=sample('2',area=39.4)
+    incoming=sample('3')
+    assert listing_match(incoming,first).auto
+    assert listing_match(incoming,second).possible
+    assert not best_match(incoming,[(1,first),(2,second)])[2].auto
+
+
+def test_duplicate_decision_enforces_family_role_server_side(multi_app):
+    main,admin=multi_app
+    saved(main,sample('180'),now='2026-10-01')
+    saved(main,sample('181',area=39.4),now='2026-10-02')
+    candidate=pending(admin,'181')
+    for role in ('reviewer','realtor'):
+        assert admin.post('/api/users',json={'username':role,'display_name':role,'password':'12345678','role':role}).status_code==201
+    with TestClient(main.app,base_url='https://testserver') as agent:
+        sign_in(agent,'realtor','12345678')
+        assert agent.post('/api/listings/181/duplicate-decision',json=payload(candidate,'different')).status_code==403
+    with TestClient(main.app,base_url='https://testserver') as family:
+        sign_in(family,'reviewer','12345678')
+        assert family.post('/api/listings/181/duplicate-decision',json=payload(candidate,'different')).status_code==200
