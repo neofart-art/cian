@@ -308,3 +308,39 @@ def test_timelabel_is_only_used_for_explicit_travel_duration(tmp_path):
                 await context.unroute('**/*')
             await context.close()
     asyncio.run(scenario())
+
+
+
+def test_only_first_visible_cover_is_extracted_without_gallery(tmp_path):
+    async def scenario():
+        import io
+        from PIL import Image
+        from playwright.async_api import async_playwright
+        from collector.service import Collector
+        photo='https://images.cdn-cian.ru/images/visible-first.jpg'
+        html=('''<!doctype html><meta charset="utf-8"><span data-name="UserAvatar">Профиль</span>
+          <article data-name="CardComponent"><a href="https://cian.ru/sale/flat/123/">
+          <img src="https://images.cdn-cian.ru/images/hidden.jpg" width="110" height="80" style="display:none">
+          <img src="'''+photo+'''" width="110" height="80">
+          <img src="https://images.cdn-cian.ru/images/second.jpg" width="110" height="80" style="display:none">
+          <span data-mark="OfferTitle">1-комн. квартира, 35 м²</span></a>
+          <p>Авторский текст сохраняется для matcher</p></article>''')
+        data=io.BytesIO()
+        with Image.new('RGB',(110,80),'green') as image:image.save(data,format='PNG')
+        async with async_playwright() as playwright:
+            context=await playwright.chromium.launch_persistent_context(str(tmp_path/'profile'),headless=True)
+            async def route(request):
+                if request.request.resource_type=='image':
+                    await request.fulfill(status=200,content_type='image/png',body=data.getvalue())
+                else:
+                    await request.fulfill(status=200,content_type='text/html; charset=utf-8',body=html)
+            await context.route('**/*',route)
+            collector=Collector(context);collector.page=context.pages[0]
+            result=await collector.collect(URL)
+            assert result['status']=='authorized'
+            item=result['items'][0]
+            assert item['cover_image_url']==photo
+            assert 'Авторский текст сохраняется' in item['card_text']
+            assert not any('gallery' in name or 'photos' in name for name in item)
+            await context.close()
+    asyncio.run(scenario())

@@ -81,6 +81,10 @@ def migrate_listings(database):
             'realtor_updated_at': 'TEXT',
             'realtor_updated_by': 'INTEGER REFERENCES users(id)',
             'realtor_version': 'INTEGER NOT NULL DEFAULT 0',
+            'cover_image_url': 'TEXT',
+            'cover_image_path': 'TEXT',
+            'cover_thumb_path': 'TEXT',
+            'cover_image_cached_url': 'TEXT',
         }.items():
             if name not in columns:
                 conn.execute('ALTER TABLE listings ADD COLUMN ' + name + ' ' + definition)

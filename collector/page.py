@@ -67,6 +67,9 @@ def normalize_card(card):
     duration = travel_duration(card.get('metro_time'))
     if duration:
         item.update(duration)
+    image = card.get('cover_image_url')
+    if isinstance(image,str) and len(image) <= 4096:
+        item['cover_image_url'] = image
     return item
 
 
@@ -79,7 +82,12 @@ EXTRACT_CARD = r"""el => {
     return node ? node.innerText.trim() : '';
   };
   const link = [...el.querySelectorAll('a[href*="/sale/flat/"]')].find(visible);
+  // Only the first displayed offer photo. Do not inspect srcset, hidden
+  // slides, embedded state or additional gallery images.
+  const photo = [...el.querySelectorAll('a[href*="/sale/flat/"] img, [data-name="Gallery"] img, [data-name="OfferImage"] img')]
+    .find(node => visible(node) && !node.closest('[data-name="Avatar"], [data-name="SellerInfo"]'));
   return {
+    cover_image_url: photo ? (photo.currentSrc || photo.src || '') : '',
     url: link ? link.href : '',
     title: text('[data-mark="OfferTitle"], [data-mark="OfferSubtitle"], [data-name="Title"]'),
     price: text('[data-mark="MainPrice"], [data-name="Price"]'),

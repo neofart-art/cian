@@ -26,6 +26,7 @@ from app.property_match import (best_match, candidate_rows, create_property, rec
                                 root_property, distinct_properties, save_decision, merge_properties, AUTO_MATCH_MARGIN)
 from app.criteria import browser_criteria
 from app.finance import mortgage_payment
+from app.covers import CoverCache, cover_url
 from app import source
 from app.csv_source import CianCsvSource, MAX_BYTES
 from app.browser_source import CianBrowserSource, BrowserAttention
@@ -101,6 +102,7 @@ with database() as conn:
         CASE review_status WHEN 'new' THEN 0 WHEN 'viewed' THEN 1 ELSE 2 END,first_seen DESC,id)""")
 
 migrate_listings(database)
+covers = CoverCache(DATA,database)
 
 LISTING_QUERY = '''SELECT l.*,u.display_name AS review_updated_by_name,u.username AS review_updated_by_username,
                           r.display_name AS realtor_updated_by_name,r.username AS realtor_updated_by_username
@@ -113,6 +115,7 @@ def listing_data(row):
     # Preserve unknown database columns during migrations without exposing them
     # through the public listing API (including possible non-UTF8 BLOB values).
     fields = ('id', *LISTING_FIELDS, 'first_seen', 'last_seen', 'last_imported', 'property_id',
+              'cover_image_path','cover_thumb_path','cover_image_cached_url',
               'review_status', 'review_updated_at', 'review_updated_by', 'review_version',
               'review_updated_by_name', 'review_updated_by_username',
               'realtor_status', 'realtor_comment', 'realtor_updated_at', 'realtor_updated_by', 'realtor_version',
@@ -167,6 +170,11 @@ def property_listing_data(conn, row, context=None):
     pid = item['property_id']
     history = context['groups'].get(pid, [row])
     current = context['props'][pid]['current_listing_id']
+    # The current publication owns the cover. While it is being downloaded,
+    # retain a usable older cover from this same property.
+    cached = row if row['cover_image_path'] and row['cover_thumb_path'] else next(
+        (entry for entry in reversed(history) if entry['cover_image_path'] and entry['cover_thumb_path']),row)
+    item.update(covers.sources(cached))
     item['listing_ids'] = [entry['id'] for entry in history]
     item['relist_count'] = max(0,len(history)-1)
     item['publication_history'] = [
@@ -213,7 +221,7 @@ def update_browser(**changes):
         conn.execute('UPDATE browser_state SET payload=? WHERE id=1', (json.dumps(state, ensure_ascii=False),))
 
 
-LISTING_FIELDS = ('title', 'price', 'address', 'url', 'complex_name', 'area', 'floor', 'metro', 'metro_time', 'source', 'card_text', 'description', 'metro_walk_minutes')
+LISTING_FIELDS = ('title', 'price', 'address', 'url', 'complex_name', 'area', 'floor', 'metro', 'metro_time', 'source', 'card_text', 'description', 'metro_walk_minutes', 'cover_image_url')
 
 
 def save_items(conn, items, now, imported=False):
@@ -226,6 +234,8 @@ def save_items(conn, items, now, imported=False):
     coobserved = {row['property_id'] for row in conn.execute('SELECT id,property_id FROM listings') if str(row['id']) in incoming_ids}
     claimed_targets = set()
     for item in items:
+        if 'cover_image_url' in item:
+            item = {**item,'cover_image_url':cover_url(item['cover_image_url'])}
         previous = conn.execute('SELECT * FROM listings WHERE id=?',(item['id'],)).fetchone()
         merged = dict(previous) if previous else {'title':'Квартира'}
         merged.update({key:item[key] for key in LISTING_FIELDS if item.get(key) not in (None,'')})
@@ -276,6 +286,28 @@ def save_items(conn, items, now, imported=False):
     return {'added':added,'updated':updated,'relisted':relisted,'possible_duplicates':possible_duplicates}
 
 
+def schedule_covers(listing_ids):
+    try:
+        ids = {str(value) for value in listing_ids}
+        if not ids:
+            return
+        with database() as conn:
+            property_ids = {row['property_id'] for row in conn.execute('SELECT id,property_id FROM listings') if str(row['id']) in ids}
+            preferred = []
+            for row in conn.execute('''SELECT l.id,l.property_id,p.current_listing_id FROM listings l JOIN properties p ON p.id=l.property_id
+                                       WHERE l.cover_image_url IS NOT NULL ORDER BY l.first_seen DESC,l.rowid DESC'''):
+                if row['property_id'] in property_ids:
+                    preferred.append((row['property_id'],row['id'],row['id']==row['current_listing_id']))
+        selected = {}
+        for pid,listing_id,current in preferred:
+            if pid not in selected or current:
+                selected[pid] = listing_id
+        covers.enqueue(selected.values())
+
+    except Exception as exc:
+        log.warning('cover scheduling skipped error_type=%s',type(exc).__name__)
+
+
 @asynccontextmanager
 async def lifespan(app):
     stop = threading.Event()
@@ -286,6 +318,7 @@ async def lifespan(app):
     finally:
         stop.set()
         await run_in_threadpool(worker.join, 2)
+        await run_in_threadpool(covers.close)
 
 
 app = FastAPI(title='Хата — поиск квартир', docs_url=None, redoc_url=None, lifespan=lifespan)
@@ -308,6 +341,23 @@ def health():
     with database() as conn:
         conn.execute('SELECT 1').fetchone()
     return {'status': 'ok'}
+
+
+@app.get('/api/listings/{listing_id}/cover/{version}/{size}')
+def listing_cover(listing_id: str, version: str, size: Literal['normal','thumb'], user=Depends(auth)):
+    if not re.fullmatch(r'[a-f0-9]{24}',version):
+        raise HTTPException(404,'Фото отсутствует')
+    with database() as conn:
+        row = conn.execute('SELECT * FROM listings WHERE id=?',(listing_id,)).fetchone()
+    if row is None:
+        raise HTTPException(404,'Фото отсутствует')
+    expected = covers.sources(row)['cover_image_src' if size=='normal' else 'cover_thumb_src']
+    if expected != f'/api/listings/{listing_id}/cover/{version}/{size}':
+        raise HTTPException(404,'Фото отсутствует')
+    path = covers.path(row['cover_image_path' if size=='normal' else 'cover_thumb_path'])
+    if path is None or not path.is_file():
+        raise HTTPException(404,'Фото отсутствует')
+    return FileResponse(path,media_type='image/jpeg')
 
 
 @app.middleware('http')
@@ -471,6 +521,7 @@ def duplicate_decision(listing_id: str, data: DuplicateDecision, user=Depends(au
         conn.execute('UPDATE duplicate_candidates SET decision=?,decided_at=?,decided_by=? WHERE id=?',
                      ('confirmed' if data.decision=='same' else 'rejected',now,user['id'],candidate['id']))
         item = property_listing_data(conn,current_property_row(conn,target_pid if data.decision=='same' else source_pid))
+    schedule_covers([item['id']])
     log.info('Duplicate decision user_id=%s listing_id=%s decision=%s',user['id'],listing_id,data.decision)
     return item
 
@@ -487,6 +538,7 @@ def run_collection(run_id, filters, kind='online'):
         if kind == 'browser':
             update_browser(status='authorized', message='Авторизован', last_success=now,
                            new_count=result['added'], relisted_count=result['relisted'], last_error=None)
+        schedule_covers(item['id'] for item in items)
     except Exception as exc:
         message = str(exc) if isinstance(exc, source.SourceError) else 'Внутренняя ошибка сборщика; подробности в журнале сервера.'
         blocked = isinstance(exc, source.SourceBlocked)
@@ -668,6 +720,7 @@ def confirm_import(confirmation: ImportConfirmation):
         items = json.loads(preview['payload'])
         result = save_items(conn, items, now.isoformat(), imported=True)
         conn.execute('DELETE FROM import_previews WHERE token=?', (confirmation.token,))
+    schedule_covers(item['id'] for item in items)
     log.info('CSV import complete: added=%s updated=%s', result['added'], result['updated'])
     return {**result, 'count': len(items), 'message': 'CSV импортирован. Старые объявления сохранены.'}
 

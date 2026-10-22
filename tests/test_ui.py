@@ -87,7 +87,7 @@ def test_shared_review_ui_login_roles_refresh_and_layout(tmp_path, monkeypatch):
                 await expect(page.locator('#identity')).to_contain_text('Риелтор')
                 assert await page.locator('[data-admin]:visible').count() == 0
                 assert await page.locator('#listing-table th').all_text_contents() == [
-                    '№ ЦИАН','ЖК / адрес','Цена','Ипотека / мес.','Площадь','Этаж','Метро','До метро','Добавлено','Статус','Риелтор']
+                    'Фото','№ ЦИАН','ЖК / адрес','Цена','Ипотека / мес.','Площадь','Этаж','Метро','До метро','Добавлено','Статус','Риелтор']
                 assert await page.locator('.table-wrap').evaluate('el => el.scrollWidth <= el.clientWidth')
                 assert await page.evaluate('document.documentElement.scrollWidth <= innerWidth')
                 await expect(page.locator('#last-sync')).to_contain_text('16.10.2026')
@@ -95,12 +95,12 @@ def test_shared_review_ui_login_roles_refresh_and_layout(tmp_path, monkeypatch):
                 await expect(page.locator('#criteria-price')).to_have_text('Бюджет до 14,5 млн ₽')
                 await expect(page.locator('#criteria-metro')).to_contain_text('20 минут')
                 row = page.locator('tr[data-listing-id="123"]')
-                link = row.locator('td').nth(0).locator('a')
+                link = row.locator('td').nth(1).locator('a')
                 assert await link.text_content() == '123'
                 assert await link.get_attribute('target') == '_blank'
                 assert await link.get_attribute('rel') == 'noopener noreferrer'
                 stale_state = client.get('/api/state').json()
-                await row.locator('.card-details').evaluate('el => {el.open=true}')
+                await row.locator('.publication-details').evaluate('el => {el.open=true}')
                 await page.evaluate('window.savedRow = document.querySelector(\'tr[data-listing-id="123"]\')')
                 await row.locator('.review-select').select_option('viewed')
                 await expect(row.locator('.review-label')).to_have_text('Просмотрено')
@@ -109,7 +109,7 @@ def test_shared_review_ui_login_roles_refresh_and_layout(tmp_path, monkeypatch):
                 await page.evaluate('refresh()')
                 assert stale_injected == 1
                 await expect(row.locator('.review-label')).to_have_text('Просмотрено')
-                assert await row.locator('.card-details').evaluate('el => el.open')
+                assert await row.locator('.publication-details').evaluate('el => el.open')
                 assert await page.evaluate('window.savedRow === document.querySelector(\'tr[data-listing-id="123"]\')')
                 before = state_reads
                 await page.locator('[data-review-filter="new"]').click()
@@ -293,3 +293,107 @@ def test_property_identity_relisting_and_late_poll_after_manual_merge(tmp_path,m
                 assert errors==[]
                 await context.close();await browser.close()
         asyncio.run(scenario())
+
+
+
+def test_cover_column_modal_placeholder_refresh_and_hidden_marketing(tmp_path,monkeypatch):
+    from PIL import Image
+    import io
+    from app import covers as image_module
+    from tests.test_phase3 import sample
+    monkeypatch.setenv('DATA_DIR',str(tmp_path));monkeypatch.setenv('APP_USER','owner')
+    monkeypatch.setenv('APP_PASSWORD','long-test-password');monkeypatch.setenv('BROWSER_SCHEDULE_ENABLED','false')
+    monkeypatch.delenv('PUBLIC_URL',raising=False)
+    from app import main
+    importlib.reload(main)
+    color={'value':'green'}
+    def picture(_):
+        data=io.BytesIO()
+        with Image.new('RGB',(1200,800),color['value']) as image:image.save(data,format='JPEG')
+        return data.getvalue()
+    monkeypatch.setattr(image_module,'download_cover',picture)
+    with main.database() as conn:
+        main.save_items(conn,[
+            dict(sample('8100'),cover_image_url='https://images.cdn-cian.ru/images/first.jpg',description='NEVER_SHOW_MARKETING',card_text='NEVER_SHOW_MARKETING'),
+            sample('8101',address='Москва, улица с очень длинным названием для переноса, д. 21'),
+            dict(sample('8102',address='Москва, ул. Третья, д. 30'),cover_image_url='https://images.cdn-cian.ru/images/missing.jpg'),
+        ],'2026-10-22T10:00:00+00:00')
+    main.covers.sync_one('8100');main.covers.sync_one('8102')
+    with main.database() as conn:
+        missing=conn.execute("SELECT cover_thumb_path FROM listings WHERE id='8102'").fetchone()[0]
+    main.covers.path(missing).unlink()
+    with TestClient(main.app,base_url='https://xata.test') as client:
+        sign_in(client)
+        assert client.post('/api/users',json={'username':'family','display_name':'Семья','password':'12345678','role':'reviewer'}).status_code==201
+        sign_in(client,'family','12345678')
+        async def scenario():
+            from playwright.async_api import async_playwright,expect
+            requests=[]
+            async def bridge(route):
+                request=route.request;parsed=urlsplit(request.url)
+                assert parsed.hostname=='xata.test'
+                path=parsed.path+('?' + parsed.query if parsed.query else '')
+                requests.append(path)
+                headers={key:value for key,value in request.headers.items()
+                         if key.lower() in ('content-type','origin','sec-fetch-site','x-csrf-token')}
+                response=client.request(request.method,path,headers=headers,content=request.post_data_buffer,follow_redirects=False)
+                forwarded={key:value for key,value in response.headers.items()
+                           if key.lower() not in ('set-cookie','content-length','content-encoding','transfer-encoding')}
+                await route.fulfill(status=response.status_code,headers=forwarded,body=response.content)
+            async with async_playwright() as playwright:
+                browser=await playwright.chromium.launch(headless=True)
+                context=await browser.new_context(viewport={'width':1440,'height':1100})
+                await context.route('**/*',bridge)
+                page=await context.new_page()
+                errors=[];page.on('pageerror',lambda error:errors.append(str(error)))
+                await page.goto('https://xata.test/')
+                await expect(page.locator('#listings tr')).to_have_count(3)
+                await expect(page.locator('#listing-table th').first).to_have_text('Фото')
+                row=page.locator('tr[data-listing-id="8100"]')
+                thumb=row.locator('.listing-cover')
+                await expect(row.locator('.cover-button')).to_be_visible()
+                await page.wait_for_function("document.querySelector('tr[data-listing-id=\"8100\"] img').naturalWidth>0")
+                assert await thumb.get_attribute('loading')=='lazy'
+                assert await thumb.evaluate('el=>getComputedStyle(el).objectFit')=='cover'
+                size=await thumb.bounding_box()
+                assert 100<=size['width']<=111 and size['height']==80
+                assert not any(path.endswith('/normal') for path in requests)
+                await expect(page.locator('tr[data-listing-id="8101"] .cover-placeholder')).to_be_visible()
+                await expect(page.locator('tr[data-listing-id="8102"] .cover-placeholder')).to_be_visible()
+                assert await page.locator('.card-details').count()==0
+                assert 'Текст карточки / описание' not in await page.locator('body').inner_text()
+                assert 'NEVER_SHOW_MARKETING' not in await page.locator('body').inner_text()
+                await row.locator('.cover-button').click()
+                await expect(page.locator('#cover-dialog')).to_be_visible()
+                await page.wait_for_function("document.querySelector('#cover-large').naturalWidth>0")
+                assert len([path for path in requests if path.endswith('/normal')])==1
+                await expect(page.locator('#cover-cian')).to_have_text('ЦИАН 8100')
+                assert 'NEVER_SHOW_MARKETING' not in await page.locator('#cover-dialog').inner_text()
+                await page.locator('#cover-close').click()
+                await expect(page.locator('#cover-dialog')).to_be_hidden()
+                await row.locator('.publication-details > summary').click()
+                await expect(row.locator('.publication-details p')).to_contain_text('CIAN 8100')
+                await row.locator('.review-select').select_option('liked')
+                await expect(row.locator('.review-label')).to_have_text('Понравилось')
+                old_src=await thumb.get_attribute('src')
+                color['value']='red'
+                with main.database() as conn:
+                    main.save_items(conn,[{'id':'8100','cover_image_url':'https://images.cdn-cian.ru/images/changed.jpg'}],
+                                    '2026-10-22T11:00:00+00:00')
+                main.covers.sync_one('8100')
+                await page.evaluate('refresh(true)')
+                assert await thumb.get_attribute('src')!=old_src
+                await page.wait_for_function("document.querySelector('tr[data-listing-id=\"8100\"] img').naturalWidth>0")
+                assert await row.locator('.publication-details').evaluate('el=>el.open')
+                assert 'NEVER_SHOW_MARKETING' not in await page.locator('body').inner_text()
+                assert await page.locator('.table-wrap').evaluate('el=>el.scrollWidth<=el.clientWidth')
+                assert await page.evaluate('document.documentElement.scrollWidth<=innerWidth')
+                await page.set_viewport_size({'width':390,'height':844})
+                assert await page.evaluate('document.documentElement.scrollWidth<=innerWidth')
+                await expect(row.locator('.cover-button')).to_be_visible()
+                assert errors==[]
+                await context.close();await browser.close()
+        asyncio.run(scenario())
+    with main.database() as conn:
+        data=conn.execute("SELECT description,card_text FROM listings WHERE id='8100'").fetchone()
+        assert tuple(data)==('NEVER_SHOW_MARKETING','NEVER_SHOW_MARKETING')

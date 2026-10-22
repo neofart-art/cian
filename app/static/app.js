@@ -40,19 +40,37 @@ function cell(row) { const td = document.createElement('td'); row.append(td); re
 function safeCianUrl(value) {
   return /^https?:\/\/([a-z0-9-]+\.)*cian\.ru(?::(?:80|443))?\/sale\/flat\/\d+\/?(?:[?#].*)?$/i.test(value || '');
 }
+function localCover(value) {
+  return /^\/api\/listings\/[0-9]+\/cover\/[a-f0-9]{24}\/(?:normal|thumb)$/.test(value || '') ? value : null;
+}
+const coverDialog = document.querySelector('#cover-dialog'), largeCover = document.querySelector('#cover-large');
+const largePlaceholder = document.querySelector('#cover-large-placeholder');
+function openCover(id) {
+  const item=records.get(id), source=localCover(item?.cover_image_src);
+  if (!item || !source) return;
+  setText(document.querySelector('#cover-title'),item.complex_name || item.title || 'Квартира');
+  setText(document.querySelector('#cover-address'),item.address || '');
+  setText(document.querySelector('#cover-price'),item.price == null ? 'Цена не указана' : Number(item.price).toLocaleString('ru-RU') + ' ₽');
+  const link=document.querySelector('#cover-cian');
+  link.textContent='ЦИАН ' + item.id;
+  if (safeCianUrl(item.url)) link.href=item.url; else link.removeAttribute('href');
+  largeCover.hidden=false; largePlaceholder.hidden=true; largeCover.alt='Заглавное фото квартиры ' + item.id;
+  largeCover.src=source;
+  coverDialog.showModal();
+}
+largeCover.addEventListener('error',()=>{largeCover.hidden=true; largePlaceholder.hidden=false;});
+document.querySelector('#cover-close').addEventListener('click',()=>coverDialog.close());
+coverDialog.addEventListener('close',()=>largeCover.removeAttribute('src'));
 function makeRow(id) {
   const row = document.createElement('tr');
   row.dataset.listingId = id;
-  const cells = Array.from({length:11}, () => cell(row));
+  const cells = Array.from({length:12}, () => cell(row));
   const link = document.createElement('a');
   link.target = '_blank'; link.rel = 'noopener noreferrer';
-  cells[0].append(link);
-  cells[1].className = 'object-cell';
+  cells[1].append(link);
+  cells[2].className = 'object-cell';
   const title = document.createElement('strong'), address = document.createElement('small');
   const propertyHistory = document.createElement('small'); propertyHistory.className = 'property-history';
-  const details = document.createElement('details'), summary = document.createElement('summary'), text = document.createElement('p');
-  details.className = 'card-details';
-  summary.textContent = 'Текст карточки / описание'; details.append(summary, text);
   const duplicateBox = document.createElement('div'); duplicateBox.className = 'duplicate-box';
   const duplicateText = document.createElement('div');
   const duplicateActions = document.createElement('div'); duplicateActions.className = 'duplicate-actions';
@@ -64,8 +82,14 @@ function makeRow(id) {
   historyDetails.append(historySummary,historyText);
   const duplicateCompare = document.createElement('a'); duplicateCompare.target='_blank'; duplicateCompare.rel='noopener noreferrer';
   duplicateCompare.textContent='Сравнить на ЦИАН'; duplicateBox.insertBefore(duplicateCompare,duplicateActions);
-  cells[1].append(title,address,propertyHistory,details,historyDetails,duplicateBox);
-  const date = document.createElement('time'), clock = document.createElement('small'); cells[8].append(date, clock);
+  cells[2].append(title,address,propertyHistory,historyDetails,duplicateBox);
+  const coverButton = document.createElement('button'); coverButton.type='button'; coverButton.className='cover-button';
+  const coverImage = document.createElement('img'); coverImage.className='listing-cover'; coverImage.loading='lazy';
+  coverImage.decoding='async'; coverImage.width=110; coverImage.height=80;
+  const coverPlaceholder = document.createElement('span'); coverPlaceholder.className='cover-placeholder'; coverPlaceholder.textContent='Нет фото';
+  coverButton.append(coverImage); cells[0].append(coverButton,coverPlaceholder);
+  coverButton.addEventListener('click',()=>openCover(id));
+  const date = document.createElement('time'), clock = document.createElement('small'); cells[9].append(date, clock);
   const badge = document.createElement('span'); badge.className = 'review-label';
   const select = document.createElement('select'); select.className = 'review-select';
   select.setAttribute('aria-label', 'Статус объявления ' + id);
@@ -74,7 +98,7 @@ function makeRow(id) {
   const saving = document.createElement('div'); saving.className = 'review-saving'; saving.setAttribute('aria-live', 'polite');
   select.addEventListener('change', () => changeReview(id, select.value));
   select.addEventListener('blur', () => renderListings());
-  cells[9].append(badge, select, meta, saving);
+  cells[10].append(badge, select, meta, saving);
   const realtorBadge = document.createElement('span'); realtorBadge.className = 'realtor-label';
   const commentPreview = document.createElement('small'); commentPreview.className = 'comment-preview';
   const commentDetails = document.createElement('details'), commentSummary = document.createElement('summary'), commentText = document.createElement('p');
@@ -92,10 +116,14 @@ function makeRow(id) {
   const saveRealtor = document.createElement('button'); saveRealtor.type = 'submit'; saveRealtor.className = 'compact'; saveRealtor.textContent = 'Сохранить';
   const realtorSaving = document.createElement('small'); realtorSaving.setAttribute('aria-live','polite');
   realtorForm.append(realtorSelect,comment,saveRealtor,realtorSaving); editor.append(editorSummary,realtorForm);
-  cells[10].append(realtorBadge,commentPreview,commentDetails,realtorMeta,editor);
-  const entry = {row,cells,link,title,address,propertyHistory,details,text,historyDetails,historyText,duplicateCompare,duplicateBox,duplicateText,duplicateActions,
+  cells[11].append(realtorBadge,commentPreview,commentDetails,realtorMeta,editor);
+  const entry = {row,cells,link,title,address,propertyHistory,coverButton,coverImage,coverPlaceholder,failedCover:null,historyDetails,historyText,duplicateCompare,duplicateBox,duplicateText,duplicateActions,
     duplicateSame,duplicateDifferent,date,clock,badge,select,meta,saving,
     realtorBadge,commentPreview,commentDetails,commentText,realtorMeta,editor,realtorSelect,comment,saveRealtor,realtorSaving,dirty:false};
+  coverImage.addEventListener('error',()=>{
+    entry.failedCover=coverImage.getAttribute('src');
+    coverButton.hidden=true; coverPlaceholder.hidden=false;
+  });
   comment.addEventListener('input', () => {entry.dirty=true;});
   realtorSelect.addEventListener('change', () => {entry.dirty=true;});
   realtorForm.addEventListener('submit', event => {event.preventDefault(); changeRealtor(id);});
@@ -113,13 +141,19 @@ function renderRow(item, forceReview = false) {
   entry.select.setAttribute('aria-label','Статус объявления ' + item.id);
   entry.realtorSelect.setAttribute('aria-label','Оценка риелтора ' + item.id);
   entry.comment.setAttribute('aria-label','Комментарий риелтора ' + item.id);
-  const {row,cells,link,title,address,details,text,date,clock,badge,select,meta,saving} = entry;
+  const {row,cells,link,title,address,date,clock,badge,select,meta,saving} = entry;
   setText(link, item.id);
   if (safeCianUrl(item.url)) link.href = item.url; else link.removeAttribute('href');
   setText(title, item.complex_name || item.title || 'Квартира');
   setText(address, item.address);
-  const description = item.card_text || item.description || '';
-  details.hidden = !description; setText(text, description);
+  const thumb = localCover(item.cover_thumb_src);
+  const usableCover = thumb && entry.failedCover !== thumb;
+  entry.coverButton.hidden=!usableCover; entry.coverPlaceholder.hidden=!!usableCover;
+  entry.coverButton.setAttribute('aria-label','Открыть фото объявления ' + item.id);
+  entry.coverImage.alt='Заглавное фото квартиры ' + item.id;
+  if (thumb && entry.coverImage.getAttribute('src') !== thumb) {
+    entry.failedCover=null; entry.coverImage.src=thumb;
+  } else if (!thumb) entry.coverImage.removeAttribute('src');
   const ids = item.listing_ids || [item.id];
   const relists = Number(item.relist_count || 0);
   setText(entry.propertyHistory, relists ? 'Перепубликовано ' + relists + ' ' + (relists === 1 ? 'раз' : 'раза') + ' · CIAN: ' + ids.join(' → ') : '');
@@ -139,11 +173,11 @@ function renderRow(item, forceReview = false) {
     entry.duplicateActions.hidden = !canDecide;
     entry.duplicateSame.disabled = entry.duplicateDifferent.disabled = pendingDuplicates.has(id);
   }
-  setText(cells[2], item.price == null ? '—' : new Intl.NumberFormat('ru-RU', {style:'currency', currency:'RUB', maximumFractionDigits:0}).format(item.price));
+  setText(cells[3], item.price == null ? '—' : new Intl.NumberFormat('ru-RU', {style:'currency', currency:'RUB', maximumFractionDigits:0}).format(item.price));
   const payment = XataReview.mortgage(item.price);
-  setText(cells[3], payment == null ? '—' : (payment > 0 ? '≈ ' : '') + (Math.round(payment / 100) * 100).toLocaleString('ru-RU') + ' ₽/мес.');
-  setText(cells[4], item.area == null ? '—' : item.area + ' м²');
-  setText(cells[5], item.floor || '—'); setText(cells[6], item.metro || '—'); setText(cells[7], item.metro_time || '—');
+  setText(cells[4], payment == null ? '—' : (payment > 0 ? '≈ ' : '') + (Math.round(payment / 100) * 100).toLocaleString('ru-RU') + ' ₽/мес.');
+  setText(cells[5], item.area == null ? '—' : item.area + ' м²');
+  setText(cells[6], item.floor || '—'); setText(cells[7], item.metro || '—'); setText(cells[8], item.metro_time || '—');
   const first = item.first_seen ? new Date(item.first_seen) : null;
   setText(date, first ? first.toLocaleDateString('ru-RU') : '—');
   date.dateTime = item.first_seen || '';
