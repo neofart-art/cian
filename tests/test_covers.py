@@ -334,3 +334,17 @@ def test_local_image_paths_cannot_escape_data_directory(multi_app):
     relative='images/listings/9000-'+('a'*24)+'-normal.jpg'
     (main.DATA/relative).symlink_to(outside)
     assert main.covers.path(relative) is None
+
+
+def test_large_cover_is_oriented_resized_and_metadata_removed():
+    stream=io.BytesIO()
+    with Image.new('RGB',(3200,2400),'green') as source:
+        exif=Image.Exif();exif[274]=6;exif[270]='PRIVATE camera metadata'
+        source.save(stream,format='JPEG',exif=exif)
+    normal,thumb=images.resize_cover(stream.getvalue())
+    with Image.open(io.BytesIO(normal)) as image:
+        assert image.size==(900,1200)
+        assert not image.getexif()
+    with Image.open(io.BytesIO(thumb)) as image:
+        assert image.size==(220,160)
+        assert not image.getexif()

@@ -128,15 +128,18 @@ def resize_cover(data):
             if (source.format not in {'JPEG','PNG','WEBP','AVIF'} or source.width*source.height > MAX_PIXELS
                     or getattr(source,'n_frames',1) != 1):
                 raise ValueError('Unsupported image dimensions or format')
+            # JPEG draft decoding and resizing before RGB conversion keep the
+            # single worker within the existing app container's memory budget.
+            source.draft('RGB',(1600,1200))
             source.load()
             oriented = ImageOps.exif_transpose(source)
+            oriented.thumbnail((1600,1200),Image.Resampling.LANCZOS)
             rgb = Image.new('RGB',oriented.size,(244,243,236))
             if 'A' in oriented.getbands():
                 rgb.paste(oriented,mask=oriented.getchannel('A'))
             else:
                 rgb.paste(oriented.convert('RGB'))
             oriented.close()
-            rgb.thumbnail((1600,1200),Image.Resampling.LANCZOS)
             normal = io.BytesIO()
             rgb.save(normal,format='JPEG',quality=82,optimize=True)
             thumb = ImageOps.fit(rgb,(220,160),method=Image.Resampling.LANCZOS)
