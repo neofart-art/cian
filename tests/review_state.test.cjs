@@ -38,6 +38,28 @@ test('liked order and filter counts', () => {
   assert.deepEqual(state.counts(items),{all:5,new:1,liked:2,viewed:1,rejected:1});
   assert.deepEqual(state.ordered(items.filter(x=>x.review_status==='liked')).map(x=>x.id),['5','2']);
 });
+test('either rejection controls presentation without overwriting independent decisions', () => {
+  for (const review_status of ['new','liked','viewed','rejected']) {
+    for (const realtor_status of ['pending','approved','rejected']) {
+      const item = Object.freeze({id:'1',review_status,realtor_status});
+      assert.equal(state.effectiveStatus(item),realtor_status === 'rejected' ? 'rejected' : review_status);
+      assert.equal(item.review_status,review_status);
+      assert.equal(item.realtor_status,realtor_status);
+    }
+  }
+  const items = [
+    {id:'1',review_status:'liked',realtor_status:'rejected',first_seen:'2030-01-01'},
+    {id:'2',review_status:'new',realtor_status:'approved'},
+    {id:'3',review_status:'viewed',realtor_status:'pending'},
+    {id:'4',review_status:'rejected',realtor_status:'approved'}
+  ];
+  assert.deepEqual(state.counts(items),{all:4,new:1,liked:0,viewed:1,rejected:2});
+  assert.deepEqual(state.ordered(items).map(x=>x.id),['2','3','1','4']);
+  assert.deepEqual(state.ordered(items,{key:'review_status',direction:'asc'}).map(x=>x.id),['2','3','1','4']);
+  assert.equal(state.effectiveStatus({...items[0],realtor_status:'approved'}),'liked');
+  assert.equal(state.effectiveStatus({...items[0],realtor_status:'pending'}),'liked');
+  assert.equal(state.effectiveStatus({}),'new');
+});
 test('numeric sorting, nulls last both directions, mortgage exact sort', () => {
   const items=[{id:'10',price:null,area:null},{id:'2',price:14000000,area:40},{id:'3',price:9500000,area:9.5}];
   for (const key of ['id','price','area','mortgage']) {

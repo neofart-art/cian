@@ -190,7 +190,8 @@ function renderRow(item, forceReview = false) {
   date.dateTime = item.first_seen || '';
   setText(clock, first ? first.toLocaleTimeString('ru-RU', {hour:'2-digit', minute:'2-digit'}) : '');
   const review = item.review_status || 'new';
-  row.className = 'review-' + review;
+  const effectiveStatus = XataReview.effectiveStatus(item);
+  row.className = 'review-' + effectiveStatus;
   row.dataset.reviewStatus = review;
   setText(badge, labels[review]);
   if (forceReview || (!pendingReviews.has(id) && document.activeElement !== select)) select.value = review;
@@ -220,7 +221,7 @@ function renderRow(item, forceReview = false) {
     entry.comment.value = item.realtor_comment || '';
   }
   setText(entry.realtorSaving, pendingRealtors.has(id) ? 'Сохраняем…' : '');
-  row.hidden = selectedFilter !== 'all' && selectedFilter !== review;
+  row.hidden = selectedFilter !== 'all' && selectedFilter !== effectiveStatus;
   return row;
 }
 function renderListings() {

@@ -46,7 +46,7 @@
       case 'metro': return item.metro || null;
       case 'metro_time': return minutes(item);
       case 'first_seen': return numeric(item.first_seen ? Date.parse(item.first_seen) : null);
-      case 'review_status': return rank[item.review_status || 'new'] ?? null;
+      case 'review_status': return rank[effectiveStatus(item)] ?? null;
       case 'realtor_status': return realtorRank[item.realtor_status || 'pending'] ?? null;
       default: return null;
     }
@@ -54,8 +54,11 @@
   function compare(a,b) {
     return typeof a === 'number' && typeof b === 'number' ? a-b : collator.compare(String(a),String(b));
   }
+  function effectiveStatus(item) {
+    return item.realtor_status === 'rejected' ? 'rejected' : (item.review_status || 'new');
+  }
   function defaultOrder(a,b) {
-    return (rank[a.review_status] ?? 0) - (rank[b.review_status] ?? 0)
+    return (rank[effectiveStatus(a)] ?? 0) - (rank[effectiveStatus(b)] ?? 0)
       || (value(b,'first_seen') ?? 0) - (value(a,'first_seen') ?? 0)
       || compare(value(a,'id') ?? a.id, value(b,'id') ?? b.id);
   }
@@ -80,10 +83,10 @@
   }
   function counts(items) {
     const result = {all:0,new:0,liked:0,viewed:0,rejected:0};
-    for (const item of items) { result.all++; result[item.review_status || 'new']++; }
+    for (const item of items) { result.all++; result[effectiveStatus(item)]++; }
     return result;
   }
-  const api = {key,reconcile,merge,ordered,cycleSort,counts,mortgage,minutes};
+  const api = {key,reconcile,merge,ordered,cycleSort,counts,mortgage,minutes,effectiveStatus};
   root.XataReview = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
