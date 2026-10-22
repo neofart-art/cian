@@ -144,7 +144,7 @@ def test_shared_review_ui_login_roles_refresh_and_layout(tmp_path, monkeypatch):
                 await expect(row.locator('.realtor-meta')).to_contain_text('Эксперт')
                 await row.locator('.realtor-details > summary').click()
                 await expect(row.locator('.comment-text')).to_have_text(comment)
-                assert await row.locator('img').count() == 0
+                assert await row.locator('img:not(.listing-cover)').count() == 0
                 inject_stale = True
                 await page.evaluate('refresh()')
                 await expect(row.locator('.realtor-label')).to_have_text('Отбраковано')
@@ -385,6 +385,16 @@ def test_cover_column_modal_placeholder_refresh_and_hidden_marketing(tmp_path,mo
                 assert await thumb.get_attribute('src')!=old_src
                 await page.wait_for_function("document.querySelector('tr[data-listing-id=\"8100\"] img').naturalWidth>0")
                 assert await row.locator('.publication-details').evaluate('el=>el.open')
+                # Restoring a missing file may retain the same content URL.
+                # The placeholder must recover on a bounded retry, without a reload.
+                broken_src=await page.locator('tr[data-listing-id="8102"] img').get_attribute('src')
+                color['value']='green'
+                main.covers.sync_one('8102')
+                await page.evaluate("for (const entry of rows.values()) entry.failedCoverAt=0")
+                await page.evaluate('refresh(true)')
+                await expect(page.locator('tr[data-listing-id="8102"] .cover-button')).to_be_visible()
+                await page.wait_for_function("document.querySelector('tr[data-listing-id=\"8102\"] img').naturalWidth>0")
+                assert await page.locator('tr[data-listing-id="8102"] img').get_attribute('src')==broken_src
                 assert 'NEVER_SHOW_MARKETING' not in await page.locator('body').inner_text()
                 assert await page.locator('.table-wrap').evaluate('el=>el.scrollWidth<=el.clientWidth')
                 assert await page.evaluate('document.documentElement.scrollWidth<=innerWidth')

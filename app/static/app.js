@@ -117,12 +117,16 @@ function makeRow(id) {
   const realtorSaving = document.createElement('small'); realtorSaving.setAttribute('aria-live','polite');
   realtorForm.append(realtorSelect,comment,saveRealtor,realtorSaving); editor.append(editorSummary,realtorForm);
   cells[11].append(realtorBadge,commentPreview,commentDetails,realtorMeta,editor);
-  const entry = {row,cells,link,title,address,propertyHistory,coverButton,coverImage,coverPlaceholder,failedCover:null,historyDetails,historyText,duplicateCompare,duplicateBox,duplicateText,duplicateActions,
+  const entry = {row,cells,link,title,address,propertyHistory,coverButton,coverImage,coverPlaceholder,failedCover:null,failedCoverAt:0,historyDetails,historyText,duplicateCompare,duplicateBox,duplicateText,duplicateActions,
     duplicateSame,duplicateDifferent,date,clock,badge,select,meta,saving,
     realtorBadge,commentPreview,commentDetails,commentText,realtorMeta,editor,realtorSelect,comment,saveRealtor,realtorSaving,dirty:false};
   coverImage.addEventListener('error',()=>{
-    entry.failedCover=coverImage.getAttribute('src');
+    entry.failedCover=coverImage.getAttribute('src'); entry.failedCoverAt=Date.now();
     coverButton.hidden=true; coverPlaceholder.hidden=false;
+  });
+  coverImage.addEventListener('load',()=>{
+    entry.failedCover=null; entry.failedCoverAt=0;
+    coverButton.hidden=false; coverPlaceholder.hidden=true;
   });
   comment.addEventListener('input', () => {entry.dirty=true;});
   realtorSelect.addEventListener('change', () => {entry.dirty=true;});
@@ -147,11 +151,14 @@ function renderRow(item, forceReview = false) {
   setText(title, item.complex_name || item.title || 'Квартира');
   setText(address, item.address);
   const thumb = localCover(item.cover_thumb_src);
-  const usableCover = thumb && entry.failedCover !== thumb;
+  // A missing local file can be restored at the same content URL. Retry
+  // failures at a bounded cadence instead of keeping a permanent placeholder.
+  const retryCover = thumb && entry.failedCover === thumb && Date.now()-entry.failedCoverAt >= 30000;
+  const usableCover = thumb && (entry.failedCover !== thumb || retryCover);
   entry.coverButton.hidden=!usableCover; entry.coverPlaceholder.hidden=!!usableCover;
   entry.coverButton.setAttribute('aria-label','Открыть фото объявления ' + item.id);
   entry.coverImage.alt='Заглавное фото квартиры ' + item.id;
-  if (thumb && entry.coverImage.getAttribute('src') !== thumb) {
+  if (thumb && (entry.coverImage.getAttribute('src') !== thumb || retryCover)) {
     entry.failedCover=null; entry.coverImage.src=thumb;
   } else if (!thumb) entry.coverImage.removeAttribute('src');
   const ids = item.listing_ids || [item.id];
