@@ -44,6 +44,7 @@ jobs:
         run: |
           docker build -t xata-app-test .
           docker build -f Dockerfile.browser -t xata-browser-test .
+          docker run --rm --entrypoint python xata-app-test -c "from datetime import date; from app.viewings import calendar_timestamp; assert calendar_timestamp(date(2026, 11, 1)).isoformat() == '2026-10-31T21:00:00+00:00'"
       - name: Headed browser container smoke test, no Cian navigation
         run: |
           docker run -d --name xata-browser-smoke --init --read-only --cap-drop ALL --security-opt no-new-privileges:true --memory 1g --cpus 1 --pids-limit 256 --shm-size 256m --tmpfs /tmp:size=128m,mode=1777 --tmpfs /home/browser:size=16m,uid=10001,gid=10001,mode=700 -e HOME=/home/browser -e BROWSER_API_TOKEN=ci-test-password-16 -v xata-browser-smoke-profile:/profile xata-browser-test

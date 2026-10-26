@@ -167,8 +167,16 @@ footer{font-size:13px}
 #compare-dialog button{min-height:44px}
 @media(max-width:480px){#compare-dialog{padding:12px}#compare-table th,#compare-table td{min-width:200px;width:200px}#compare-table th:first-child{min-width:130px;width:130px}}
 
-/* Inline date editing needs a full datetime control; scroll stays in the table. */
-.visit-date-input{display:block;width:220px;min-width:0;max-width:100%;height:36px;min-height:36px;padding:6px 7px;font-size:14px;line-height:20px}
+/* Calendar-day editor with explicit confirmation; scroll stays in the table. */
+.visit-date-editor{display:flex;align-items:center;gap:4px;width:200px;max-width:100%}
+.visit-date-control{position:relative;flex:0 1 108px;width:108px;min-width:0}
+.visit-date-input{display:block;width:100%;min-width:0;max-width:100%;height:36px;min-height:36px;padding:6px 26px 6px 6px;font-size:14px;line-height:20px;font-variant-numeric:tabular-nums}
+.visit-date-picker{position:absolute;right:2px;top:2px;display:block;width:22px;min-width:0;max-width:22px;height:32px;min-height:32px;padding:0;border:0;background:transparent;color:transparent;font-size:0;cursor:pointer}
+.visit-date-picker::-webkit-datetime-edit{display:none}
+.visit-date-picker::-webkit-calendar-picker-indicator{width:16px;height:16px;margin:0;padding:2px;opacity:1}
+.visit-date-clear,.visit-date-ok{height:36px;min-height:36px;padding:0 4px;font-size:12px;line-height:18px}
+.visit-date-clear{flex:0 0 56px;width:56px}
+.visit-date-ok{flex:0 0 28px;width:28px}
 .visit-date-status{font-size:12px;white-space:normal}
 .visit-date-status:empty{display:none}
 :is(#listing-table,#rejected-table):has(.visit-date-input){min-width:1600px}
@@ -184,11 +192,17 @@ footer{font-size:13px}
 :is(#listing-table,#rejected-table):has(.visit-date-input) th:nth-child(10){width:5.5%}
 :is(#listing-table,#rejected-table):has(.visit-date-input) th:nth-child(11){width:7%}
 :is(#listing-table,#rejected-table):has(.visit-date-input) th:nth-child(12){width:9%}
-:is(#listing-table,#rejected-table):has(.visit-date-input) th:nth-child(13){width:234px}
+:is(#listing-table,#rejected-table):has(.visit-date-input) th:nth-child(13){width:214px}
 :is(#listing-table,#rejected-table):has(.visit-date-input) th:nth-child(14){width:7%}
 
-/* Keep touch targets comfortable and contain the full native date/time control. */
+/* Keep confirmation buttons and the calendar comfortable on touch screens. */
 @media(max-width:767px),(pointer:coarse){
-  .visit-date-input{width:240px;height:44px;min-height:44px;font-size:16px}
-  :is(#listing-table,#rejected-table):has(.visit-date-input) th:nth-child(13){width:254px}
+  .visit-date-editor{width:232px}
+  .visit-date-control{flex-basis:116px;width:116px}
+  .visit-date-input{height:44px;min-height:44px;font-size:16px}
+  .visit-date-picker{height:40px;min-height:40px}
+  .visit-date-clear,.visit-date-ok{height:44px;min-height:44px;font-size:14px}
+  .visit-date-clear{flex-basis:64px;width:64px}
+  .visit-date-ok{flex-basis:44px;width:44px}
+  :is(#listing-table,#rejected-table):has(.visit-date-input) th:nth-child(13){width:246px}
 }

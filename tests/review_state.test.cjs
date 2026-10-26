@@ -162,3 +162,36 @@ test('comparison price per square metre requires known price and positive area',
   for(const item of [{price:null,area:40},{price:12000000,area:0},{price:12000000,area:-1},{price:12000000,area:null},{}])
     assert.equal(state.pricePerMeter(item),null);
 });
+
+test('overdue is a Moscow calendar day comparison, never an expired hour today',()=>{
+  const now=Date.parse('2026-10-25T21:30:00Z'); // October 26, 00:30 in Moscow.
+  for(const stamp of ['2026-10-25T21:00:00Z','2026-10-26T06:00:00Z','2026-10-26T20:59:59Z']) {
+    const v=Object.freeze({status:'planned',scheduled_at:stamp});
+    assert.equal(state.overdue(v,now),false);
+    assert.equal(v.status,'planned');
+  }
+  const today={status:'planned',scheduled_at:'2026-10-25T21:00:00Z'};
+  assert.equal(state.overdue({status:'planned',scheduled_at:'2026-10-25T20:59:59Z'},now),true);
+  assert.equal(state.overdue(today,Date.parse('2026-10-26T20:59:59Z')),false);
+  assert.equal(state.overdue(today,Date.parse('2026-10-26T21:00:00Z')),true);
+  assert.equal(state.overdue({status:'completed',scheduled_at:'2020-01-01T00:00:00Z'},now),false);
+  assert.equal(state.overdue({status:'planned',scheduled_at:'invalid'},now),false);
+});
+test('calendar display and parsing do not depend on browser date locale',()=>{
+  assert.equal(state.moscowDay('2026-10-31T23:30:00Z'),'2026-11-01');
+  assert.equal(state.moscowDay('2026-10-31T20:59:59Z'),'2026-10-31');
+  assert.equal(state.displayDay('2026-11-01'),'01.11.2026');
+  assert.equal(state.displayDay(null),'—');
+  assert.equal(state.parseDay('01.11.2026'),'2026-11-01');
+  assert.equal(state.parseDay('29.02.2028'),'2028-02-29');
+  for(const text of ['29.02.2026','31.04.2026','00.12.2026','01.13.2026','1.11.2026','01.01.1999','01.01.2101'])
+    assert.equal(state.parseDay(text),null);
+});
+test('viewing date sort uses the shown Moscow day, with missing days last',()=>{
+  const a={id:'1',visits:[{id:1,status:'planned',scheduled_at:'2026-10-31T23:30:00Z'}]};
+  const b={id:'2',visits:[{id:2,status:'completed',completed_at:'2026-11-01T18:00:00+03:00'}]};
+  const c={id:'3',visits:[{id:3,status:'planned',scheduled_at:'2026-10-31T20:59:00Z'}]};
+  assert.equal(state.visitDate(a),state.visitDate(b));
+  assert.deepEqual(state.ordered([a,b,c,{id:'4'}],{key:'visit_date',direction:'asc'}).map(i=>i.id),['3','1','2','4']);
+  assert.deepEqual(state.ordered([a,b,c,{id:'4'}],{key:'visit_date',direction:'desc'}).map(i=>i.id),['1','2','3','4']);
+});

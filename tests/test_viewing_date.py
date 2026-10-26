@@ -177,3 +177,68 @@ def test_simultaneous_first_date_cannot_create_duplicates(multi_app,same_key):
         responses=list(pool.map(save,[data,other]))
     assert sorted(r.status_code for r in responses)==([200,200] if same_key else [200,409])
     assert len(current(admin)['visits'])==1 and current(admin)['visits_version']==1
+
+
+@pytest.mark.parametrize('day,stored',[
+    ('2026-11-01','2026-10-31T21:00:00+00:00'),
+    ('2026-01-01','2025-12-31T21:00:00+00:00'),
+    ('2000-01-01','1999-12-31T21:00:00+00:00'),
+    ('2010-06-01','2010-05-31T20:00:00+00:00'),
+    ('2100-12-31','2100-12-30T21:00:00+00:00'),
+])
+def test_calendar_day_uses_moscow_not_browser_or_utc_date(multi_app,day,stored):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    main,admin=multi_app
+    before=current(admin)
+    data=date_payload(before,day)
+    response=patch(admin,data)
+    assert response.status_code==200,response.text
+    item=response.json();visit=item['visits'][0]
+    assert visit['scheduled_at']==stored
+    assert datetime.fromisoformat(stored).astimezone(ZoneInfo('Europe/Moscow')).date().isoformat()==day
+    assert decisions(item)==decisions(before)
+    assert patch(admin,data).json()['visits']==item['visits']
+    assert current(admin)['visits_version']==item['visits_version']
+    assert len(current(admin)['visits'])==1
+
+
+def test_calendar_day_preserves_existing_wall_time_precision_and_result(multi_app):
+    main,admin=multi_app
+    item=create(admin,scheduled_at='2026-10-31T23:30:15.123456+00:00',
+                preparation='До',comment='После')
+    old=item['visits'][0]
+    # Its UTC day is October 31, but the displayed Moscow day is November 1.
+    unchanged=patch(admin,date_payload(item,'2026-11-01'))
+    assert unchanged.status_code==200
+    assert unchanged.json()['visits']==item['visits']
+    assert unchanged.json()['visits_version']==item['visits_version']
+    changed=patch(admin,date_payload(item,'2026-11-02')).json()
+    assert changed['visits'][0]['id']==old['id']
+    assert changed['visits'][0]['scheduled_at']=='2026-11-01T23:30:15.123456+00:00'
+    assert changed['visits'][0]['preparation']=='До' and changed['visits'][0]['comment']=='После'
+    assert decisions(changed)==decisions(item)
+    visit=changed['visits'][0]
+    complete=admin.patch('/api/listings/123/visits/'+str(visit['id']),json=payload(changed,
+        version=visit['version'],status='completed',outcome='rejected',scheduled_at=visit['scheduled_at'],
+        completed_at='2026-11-02T20:15:43.654321+03:00',preparation='До',comment='После',rejection_reasons=['noise'])).json()
+    after=patch(admin,date_payload(complete,'2026-11-03')).json()
+    assert after['visits'][0]['completed_at']=='2026-11-03T17:15:43.654321+00:00'
+    assert after['visits'][0]['outcome']=='rejected'
+    assert after['visits'][0]['rejection_reasons']==['noise']
+    assert decisions(after)==decisions(complete)
+    assert len(after['visits'])==1
+
+
+@pytest.mark.parametrize('day',['2026-02-30','2026-13-01','1999-12-31','2101-01-01','01.11.2026'])
+def test_invalid_calendar_days_do_not_write(multi_app,day):
+    main,admin=multi_app
+    assert patch(admin,date_payload(current(admin),day)).status_code==422
+    assert current(admin)['visits']==[]
+
+
+def test_calendar_day_reuses_date_only_authorization(multi_app):
+    main,admin=multi_app
+    _,buyer=reviewer_client(main,admin)
+    assert patch(buyer,date_payload(current(admin),'2026-11-01')).status_code==403
+    assert current(admin)['visits']==[]

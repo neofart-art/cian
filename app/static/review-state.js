@@ -66,12 +66,32 @@
       .sort((a,b)=>(Date.parse(b.completed_at)||0)-(Date.parse(a.completed_at)||0)||b.id-a.id)[0] || null;
   }
   function displayVisit(item) { return nextVisit(item) || latestCompleted(item); }
+  const calendar=new Intl.DateTimeFormat('en-CA',{timeZone:'Europe/Moscow',year:'numeric',month:'2-digit',day:'2-digit'});
+  function moscowDay(value) {
+    if(value==null||value==='')return null;
+    const instant=new Date(value);
+    if(!Number.isFinite(instant.getTime()))return null;
+    const parts=Object.fromEntries(calendar.formatToParts(instant).map(part=>[part.type,part.value]));
+    return parts.year+'-'+parts.month+'-'+parts.day;
+  }
+  function displayDay(day) {
+    return /^\d{4}-\d{2}-\d{2}$/.test(day||'') ? day.split('-').reverse().join('.') : '—';
+  }
+  function parseDay(text) {
+    const match=/^(\d{2})\.(\d{2})\.(\d{4})$/.exec(text||'');
+    if(!match)return null;
+    const year=Number(match[3]),month=Number(match[2]),day=Number(match[1]);
+    const instant=new Date(Date.UTC(year,month-1,day));
+    return year>=2000&&year<=2100&&instant.getUTCFullYear()===year&&instant.getUTCMonth()===month-1&&instant.getUTCDate()===day
+      ? match[3]+'-'+match[2]+'-'+match[1] : null;
+  }
   function visitDate(item) {
-    const v=displayVisit(item);
-    return v ? numeric(Date.parse(v.status==='planned' ? v.scheduled_at : v.completed_at)) : null;
+    const v=displayVisit(item),day=v?moscowDay(v.status==='planned'?v.scheduled_at:v.completed_at):null;
+    return day ? Date.parse(day+'T00:00:00Z') : null;
   }
   function overdue(visit,now=Date.now()) {
-    return visit?.status==='planned' && Date.parse(visit.scheduled_at)<now;
+    const day=visit?.status==='planned'?moscowDay(visit.scheduled_at):null,today=moscowDay(now);
+    return !!day&&!!today&&day<today;
   }
   function agenda(items) {
     return [...items].flatMap(item=>(item.visits||[]).filter(v=>v.status==='planned').map(visit=>({item,visit})))
@@ -110,7 +130,7 @@
     for (const item of items) { result.all++; result[effectiveStatus(item)]++; }
     return result;
   }
-  const api = {key,reconcile,merge,ordered,cycleSort,counts,mortgage,minutes,effectiveStatus,nextVisit,latestCompleted,displayVisit,visitDate,overdue,agenda,pricePerMeter};
+  const api = {key,reconcile,merge,ordered,cycleSort,counts,mortgage,minutes,effectiveStatus,nextVisit,latestCompleted,displayVisit,visitDate,overdue,agenda,pricePerMeter,moscowDay,displayDay,parseDay};
   root.XataReview = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

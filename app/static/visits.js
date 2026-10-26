@@ -123,37 +123,62 @@ globalThis.XataVisits = {create({getItem,getUser,saveItem,request,jsonOptions,re
   }
   function renderDate(cell,item) {
     const shown=XataReview.displayVisit(item),raw=shown?(shown.status==='planned'?shown.scheduled_at:shown.completed_at):null;
-    const editable=canEditDate();
+    const day=XataReview.moscowDay(raw),editable=canEditDate();
     let editor=dateEditors.get(cell);
     if(!editor||editor.editable!==editable) {
       cell.replaceChildren();
       editor={editable,dirty:false,saving:false,failed:false};
       if(editable) {
-        const input=el('input');input.type='datetime-local';input.className='visit-date-input';
-        input.min='2000-01-01T00:00';input.max='2100-12-31T23:59';input.step='60';
+        const controls=el('div',null,'visit-date-editor'),control=el('div',null,'visit-date-control');
+        const input=el('input');input.type='text';input.className='visit-date-input';input.inputMode='numeric';
+        input.placeholder='ДД.ММ.ГГГГ';input.maxLength=10;input.autocomplete='off';
+        const picker=el('input');picker.type='date';picker.className='visit-date-picker';
+        picker.min='2000-01-01';picker.max='2100-12-31';
         const status=el('small',null,'visit-date-status');status.setAttribute('role','status');status.setAttribute('aria-live','polite');
-        editor.input=input;editor.status=status;cell.append(input,status);
-        input.addEventListener('input',()=>{editor.dirty=true;});
+        const clear=button('Очистить',()=>{
+          input.value='';picker.value='';editor.dirty=true;status.textContent='Нажмите «ОК», чтобы сохранить очистку.';
+        });clear.className='visit-date-clear secondary';
+        const ok=button('ОК',()=>persist());ok.className='visit-date-ok';
+        editor.input=input;editor.picker=picker;editor.status=status;editor.clear=clear;editor.ok=ok;
+        control.append(input,picker);controls.append(control,clear,ok);cell.append(controls,status);
+        const changed=()=>{
+          editor.dirty=true;status.textContent='Нажмите «ОК», чтобы сохранить дату.';
+        };
+        input.addEventListener('input',()=>{
+          const digits=input.value.replace(/\D/g,'').slice(0,8);
+          input.value=digits.slice(0,2)+(digits.length>2?'.'+digits.slice(2,4):'')+(digits.length>4?'.'+digits.slice(4):'');
+          picker.value=XataReview.parseDay(input.value)||'';changed();
+        });
+        picker.addEventListener('change',()=>{
+          input.value=picker.value?XataReview.displayDay(picker.value):'';changed();
+        });
+        picker.addEventListener('click',event=>{
+          if(typeof picker.showPicker==='function') {
+            try {picker.showPicker();event.preventDefault();} catch(_) { /* Native fallback. */ }
+          }
+        });
         const persist=async()=>{
-          if(editor.saving||!editor.dirty||!editor.baseline)return;
-          if(!input.checkValidity()) {status.textContent='Укажите корректные дату и время (Москва).';return;}
-          if(input.value===editor.original&&!editor.failed) {editor.dirty=false;return;}
+          if(editor.saving||!editor.baseline)return;
+          const text=input.value.trim(),selected=text?XataReview.parseDay(text):null;
+          if(text&&!selected) {status.textContent='Укажите корректную дату в формате ДД.ММ.ГГГГ (2000–2100).';return;}
+          if(selected===editor.original&&!editor.failed) {
+            editor.dirty=false;editor.forceSync=true;status.textContent='Дата не изменена.';render();return;
+          }
           const expected=editor.baseline;
           if(!editor.request)editor.request={property_id:expected.propertyId,visits_version:expected.revision,
             visit_id:expected.visitId,request_id:expected.requestId};
-          const data={...editor.request,date:input.value?input.value+':00+03:00':null};
-          editor.saving=true;input.disabled=true;status.textContent='Сохраняем дату…';
+          const data={...editor.request,date:selected};
+          editor.saving=true;status.textContent='Сохраняем дату…';
+          for(const field of [input,picker,clear,ok])field.disabled=true;
           let saved=false;
           try {
             const result=await request('/api/listings/'+encodeURIComponent(expected.listingId)+'/visits/date',jsonOptions('PATCH',data));
-            saveItem(result);editor.dirty=false;editor.failed=false;editor.request=null;saved=true;
+            saveItem(result);editor.dirty=false;editor.failed=false;editor.request=null;editor.forceSync=true;saved=true;
             status.textContent='Дата сохранена.';
           } catch(e) {editor.failed=true;status.textContent=e.message;}
-          finally {editor.saving=false;input.disabled=false;render();}
+          finally {editor.saving=false;for(const field of [input,picker,clear,ok])field.disabled=false;render();}
           if(saved)await refresh();
         };
-        input.addEventListener('change',persist);
-        input.addEventListener('blur',persist);
       } else {
         editor.time=el('time');cell.append(editor.time);
       }
@@ -161,18 +186,18 @@ globalThis.XataVisits = {create({getItem,getUser,saveItem,request,jsonOptions,re
       cell.append(editor.caption,editor.overdue);dateEditors.set(cell,editor);
     }
     if(editor.editable) {
-      editor.input.setAttribute('aria-label','Дата просмотра квартиры '+item.id+' (Москва)');
-      // Keep the exact target and revision captured before the user typed;
-      // a background refresh must neither erase a draft nor retarget it.
-      if(!editor.saving&&!editor.dirty&&!editor.failed&&document.activeElement!==editor.input) {
-        editor.input.value=localDate(raw);editor.original=editor.input.value;
+      editor.input.setAttribute('aria-label','Дата просмотра квартиры '+item.id+' (ДД.ММ.ГГГГ, Москва)');
+      editor.picker.setAttribute('aria-label','Выбрать дату просмотра квартиры '+item.id);
+      // Draft and original target survive input/change, blur and background polls.
+      if(!editor.saving&&!editor.dirty&&!editor.failed&&(editor.forceSync||!cell.contains(document.activeElement))) {
+        editor.input.value=day?XataReview.displayDay(day):'';editor.picker.value=day||'';editor.original=day;
         editor.baseline={listingId:item.id,propertyId:item.property_id,revision:item.visits_version||0,
           visitId:shown?.id||null,requestId:shown?null:crypto.randomUUID()};
-        editor.request=null;
+        editor.request=null;editor.forceSync=false;
       }
     } else {
-      editor.time.textContent=format(raw);
-      if(raw)editor.time.dateTime=raw;else editor.time.removeAttribute('datetime');
+      editor.time.textContent=XataReview.displayDay(day);
+      if(day)editor.time.dateTime=day;else editor.time.removeAttribute('datetime');
     }
     editor.caption.textContent=shown?states[shown.status]:'—';
     editor.overdue.hidden=!XataReview.overdue(shown);
