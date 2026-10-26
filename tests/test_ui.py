@@ -844,7 +844,7 @@ def test_confirmed_calendar_date_drafts_permissions_mobile_and_timezone(tmp_path
                 await second.locator('.visit-date-input').fill('25.10.2026')
                 await second.get_by_role('button',name='ОК',exact=True).click()
                 await expect(second.locator('.visit-date-status')).to_have_text('Дата сохранена.')
-                await expect(second.locator('.visit-overdue')).to_be_visible()
+                await expect(second.locator('td').nth(12).locator('.visit-overdue')).to_be_visible()
                 header=page.locator('#listing-table [data-sort="visit_date"]')
                 await header.click()
                 assert await page.locator('#listings tr').evaluate_all('rows=>rows.map(r=>r.dataset.listingId)')==['9301','9300']
