@@ -819,11 +819,19 @@ def test_confirmed_calendar_date_drafts_permissions_mobile_and_timezone(tmp_path
                         return [...cell.querySelectorAll('.visit-date-editor,.visit-date-control,button,input')]
                           .every(n=>{const r=n.getBoundingClientRect();return r.left>=box.left&&r.right<=box.right+1;});
                     }""")
-                    assert await field.evaluate("""input=>{
-                        const style=getComputedStyle(input),canvas=document.createElement('canvas'),ctx=canvas.getContext('2d');
-                        ctx.font=style.fontWeight+' '+style.fontSize+' '+style.fontFamily;
-                        return ctx.measureText(input.value).width<=input.clientWidth-parseFloat(style.paddingLeft)-parseFloat(style.paddingRight)+1;
+                    fit=await field.evaluate("""input=>{
+                        const s=getComputedStyle(input),ctx=document.createElement('canvas').getContext('2d');
+                        ctx.font=s.fontWeight+' '+s.fontSize+' '+s.fontFamily;
+                        return {text:ctx.measureText(input.value).width,available:input.clientWidth-parseFloat(s.paddingLeft)-parseFloat(s.paddingRight),
+                          width:input.clientWidth,font:s.fontSize,paddingLeft:s.paddingLeft,paddingRight:s.paddingRight};
                     }""")
+                    assert fit['text']<=fit['available']+1,fit
+                    for action in (clear,ok):
+                        assert await action.evaluate("""button=>{
+                            const s=getComputedStyle(button),ctx=document.createElement('canvas').getContext('2d');
+                            ctx.font=s.fontWeight+' '+s.fontSize+' '+s.fontFamily;
+                            return ctx.measureText(button.textContent).width<=button.clientWidth-parseFloat(s.paddingLeft)-parseFloat(s.paddingRight)+1;
+                        }""")
                     assert (await field.bounding_box())['width']<140
                     if width==390:
                         for button in (clear,ok):
