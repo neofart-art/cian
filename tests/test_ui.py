@@ -419,7 +419,7 @@ def test_cover_column_modal_placeholder_refresh_and_hidden_marketing(tmp_path,mo
                 row=page.locator('tr[data-listing-id="8100"]')
                 thumb=row.locator('.listing-cover')
                 await expect(row.locator('.cover-button')).to_be_visible()
-                await page.wait_for_function("document.querySelector('tr[data-listing-id=\"8100\"] img').naturalWidth>0")
+                await expect(page.locator('tr[data-listing-id="8100"] img')).not_to_have_js_property('naturalWidth',0)
                 assert await thumb.get_attribute('loading')=='lazy'
                 assert await thumb.evaluate('el=>getComputedStyle(el).objectFit')=='cover'
                 size=await thumb.bounding_box()
@@ -432,7 +432,7 @@ def test_cover_column_modal_placeholder_refresh_and_hidden_marketing(tmp_path,mo
                 assert 'NEVER_SHOW_MARKETING' not in await page.locator('body').inner_text()
                 await row.locator('.cover-button').click()
                 await expect(page.locator('#cover-dialog')).to_be_visible()
-                await page.wait_for_function("document.querySelector('#cover-large').naturalWidth>0")
+                await expect(page.locator('#cover-large')).not_to_have_js_property('naturalWidth',0)
                 assert len([path for path in requests if path.endswith('/normal')])==1
                 await expect(page.locator('#cover-cian')).to_have_text('ЦИАН 8100')
                 assert 'NEVER_SHOW_MARKETING' not in await page.locator('#cover-dialog').inner_text()
@@ -450,7 +450,7 @@ def test_cover_column_modal_placeholder_refresh_and_hidden_marketing(tmp_path,mo
                 main.covers.sync_one('8100')
                 await page.evaluate('refresh(true)')
                 assert await thumb.get_attribute('src')!=old_src
-                await page.wait_for_function("document.querySelector('tr[data-listing-id=\"8100\"] img').naturalWidth>0")
+                await expect(page.locator('tr[data-listing-id="8100"] img')).not_to_have_js_property('naturalWidth',0)
                 assert await row.locator('.publication-details').evaluate('el=>el.open')
                 # Restoring a missing file may retain the same content URL.
                 # The placeholder must recover on a bounded retry, without a reload.
@@ -460,7 +460,7 @@ def test_cover_column_modal_placeholder_refresh_and_hidden_marketing(tmp_path,mo
                 await page.evaluate("for (const entry of rows.values()) entry.failedCoverAt=0")
                 await page.evaluate('refresh(true)')
                 await expect(page.locator('tr[data-listing-id="8102"] .cover-button')).to_be_visible()
-                await page.wait_for_function("document.querySelector('tr[data-listing-id=\"8102\"] img').naturalWidth>0")
+                await expect(page.locator('tr[data-listing-id="8102"] img')).not_to_have_js_property('naturalWidth',0)
                 assert await page.locator('tr[data-listing-id="8102"] img').get_attribute('src')==broken_src
                 assert 'NEVER_SHOW_MARKETING' not in await page.locator('body').inner_text()
                 assert await page.locator('.table-wrap').evaluate('el=>el.scrollWidth<=el.clientWidth')
@@ -645,7 +645,7 @@ def test_viewing_dates_rejections_agenda_conflicts_and_comparison_on_phone(tmp_p
                 await expect(page.locator('#compare-dialog')).to_be_visible()
                 await expect(page.locator('#compare-table thead th')).to_have_count(5)
                 await expect(page.locator('#compare-table .compare-cover')).to_have_count(1)
-                await page.wait_for_function("document.querySelector('#compare-table img').naturalWidth>0")
+                await expect(page.locator('#compare-table img')).not_to_have_js_property('naturalWidth',0)
                 square=page.get_by_role('rowheader',name='Цена за м²',exact=True).locator('..')
                 await expect(square.locator('td').first).to_contain_text('300')
                 await expect(square.locator('td').nth(2)).to_have_text('—')
