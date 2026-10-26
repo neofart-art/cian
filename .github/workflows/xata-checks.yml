@@ -32,6 +32,7 @@ jobs:
           docker compose -p xata -f docker-compose.yml -f docker-compose.browser-login.yml config --quiet
           node --check app/static/app.js
           node --check app/static/visits.js
+          node --check app/static/compare.js
           node --check app/static/login.js
           node --check app/static/review-state.js
           node --test tests/review_state.test.cjs

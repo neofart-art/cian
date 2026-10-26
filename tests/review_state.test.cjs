@@ -130,3 +130,35 @@ test('viewing versions survive delayed polls and nearest appointment ignores com
   assert.equal(state.nextVisit({}),null);
   assert.deepEqual(state.merge(previous,{id:'1',visits_version:6,visits:[]}).visits,[]);
 });
+
+test('viewing date sorts exactly the displayed appointment or latest completion, nulls always last',()=>{
+  const items=[
+    {id:'1',visits:[{id:1,status:'completed',scheduled_at:'2030-01-01T10:00:00Z',completed_at:'2026-10-01T10:00:00Z'},{id:2,status:'planned',scheduled_at:'2026-11-01T10:00:00Z'}]},
+    {id:'2',visits:[{id:3,status:'completed',completed_at:'2026-10-02T18:00:00+03:00'},{id:4,status:'cancelled',scheduled_at:'2031-01-01T10:00:00Z'}]},
+    {id:'3',visits:[{id:5,status:'cancelled',scheduled_at:'2025-01-01T10:00:00Z'}]},
+  ];
+  assert.deepEqual(state.ordered(items,{key:'visit_date',direction:'asc'}).map(i=>i.id),['2','1','3']);
+  assert.deepEqual(state.ordered(items,{key:'visit_date',direction:'desc'}).map(i=>i.id),['1','2','3']);
+  assert.equal(state.displayVisit(items[0]).id,2);
+  assert.equal(state.displayVisit(items[1]).id,3);
+  assert.equal(state.visitDate(items[2]),null);
+  assert.equal(state.latestCompleted({visits:[{id:10,status:'completed',completed_at:'2020-01-01T10:00:00Z'},{id:2,status:'completed',completed_at:'2026-01-01T10:00:00Z',outcome:'thinking'}]}).id,2);
+});
+test('agenda counts meetings, includes overdue and refused properties, ignores completed and cancelled',()=>{
+  const past=Object.freeze({id:1,status:'planned',scheduled_at:'2026-10-01T10:00:00Z'});
+  const future=Object.freeze({id:2,status:'planned',scheduled_at:'2026-11-01T10:00:00Z'});
+  const refused=Object.freeze({id:'10',review_status:'rejected',visits:Object.freeze([future,past,{id:4,status:'completed',completed_at:'2020-01-01'}])});
+  const other=Object.freeze({id:'20',visits:Object.freeze([{id:3,status:'planned',scheduled_at:'2026-10-20T18:00:00+03:00'},{id:5,status:'cancelled',scheduled_at:'2020-01-01'}])});
+  const entries=state.agenda([refused,other]);
+  assert.deepEqual(entries.map(e=>e.visit.id),[1,3,2]);
+  assert.equal(entries.length,3);
+  assert.equal(state.overdue(past,Date.parse('2026-10-26T00:00:00Z')),true);
+  assert.equal(state.overdue(future,Date.parse('2026-10-26T00:00:00Z')),false);
+  assert.equal(past.status,'planned');assert.equal(refused.review_status,'rejected');
+});
+test('comparison price per square metre requires known price and positive area',()=>{
+  assert.equal(state.pricePerMeter({price:12000000,area:40}),300000);
+  assert.equal(state.pricePerMeter({price:0,area:40}),0);
+  for(const item of [{price:null,area:40},{price:12000000,area:0},{price:12000000,area:-1},{price:12000000,area:null},{}])
+    assert.equal(state.pricePerMeter(item),null);
+});

@@ -39,6 +39,7 @@ function jsonOptions(method, data) {
 const visitUI = XataVisits.create({getItem:key=>records.get(key),getUser:()=>currentUser,
   saveItem:item=>{acceptListing(item);setText(message,'Просмотр сохранён.');message.className='';},request:async(url,options)=>responseJson(await apiFetch(url,options)),
   jsonOptions,render:renderListings,refresh:()=>refresh(true)});
+const comparisonUI = XataCompare.create({getItem:key=>records.get(key),render:renderListings});
 function cell(row) { const td = document.createElement('td'); row.append(td); return td; }
 function safeCianUrl(value) {
   return /^https?:\/\/([a-z0-9-]+\.)*cian\.ru(?::(?:80|443))?\/sale\/flat\/\d+\/?(?:[?#].*)?$/i.test(value || '');
@@ -67,7 +68,7 @@ coverDialog.addEventListener('close',()=>largeCover.removeAttribute('src'));
 function makeRow(id) {
   const row = document.createElement('tr');
   row.dataset.listingId = id;
-  const cells = Array.from({length:13}, () => cell(row));
+  const cells = Array.from({length:14}, () => cell(row));
   const link = document.createElement('a');
   link.target = '_blank'; link.rel = 'noopener noreferrer';
   cells[1].append(link);
@@ -92,6 +93,10 @@ function makeRow(id) {
   const coverPlaceholder = document.createElement('span'); coverPlaceholder.className='cover-placeholder'; coverPlaceholder.textContent='Нет фото';
   coverButton.append(coverImage); cells[0].append(coverButton,coverPlaceholder);
   coverButton.addEventListener('click',()=>openCover(id));
+  const compareLabel=document.createElement('label');compareLabel.className='compare-choice';
+  const compareInput=document.createElement('input');compareInput.type='checkbox';compareInput.className='compare-select';
+  compareLabel.append(compareInput,document.createTextNode('В сравнение'));cells[0].append(compareLabel);
+  compareInput.addEventListener('change',()=>comparisonUI.toggle(id,compareInput.checked));
   const date = document.createElement('time'), clock = document.createElement('small'); cells[9].append(date, clock);
   const badge = document.createElement('span'); badge.className = 'review-label';
   const select = document.createElement('select'); select.className = 'review-select';
@@ -101,7 +106,8 @@ function makeRow(id) {
   const saving = document.createElement('div'); saving.className = 'review-saving'; saving.setAttribute('aria-live', 'polite');
   select.addEventListener('change', () => changeReview(id, select.value));
   select.addEventListener('blur', () => renderListings());
-  cells[10].append(badge, select, meta, saving);
+  const returnHint=document.createElement('small');returnHint.className='return-hint';
+  cells[10].append(badge, select, meta, saving,returnHint);
   const realtorBadge = document.createElement('span'); realtorBadge.className = 'realtor-label';
   const commentPreview = document.createElement('small'); commentPreview.className = 'comment-preview';
   const commentDetails = document.createElement('details'), commentSummary = document.createElement('summary'), commentText = document.createElement('p');
@@ -120,7 +126,7 @@ function makeRow(id) {
   const realtorSaving = document.createElement('small'); realtorSaving.setAttribute('aria-live','polite');
   realtorForm.append(realtorSelect,comment,saveRealtor,realtorSaving); editor.append(editorSummary,realtorForm);
   cells[11].append(realtorBadge,commentPreview,commentDetails,realtorMeta,editor);
-  const entry = {row,cells,link,title,address,propertyHistory,coverButton,coverImage,coverPlaceholder,failedCover:null,failedCoverAt:0,historyDetails,historyText,duplicateCompare,duplicateBox,duplicateText,duplicateActions,
+  const entry = {row,cells,compareInput,compareLabel,returnHint,link,title,address,propertyHistory,coverButton,coverImage,coverPlaceholder,failedCover:null,failedCoverAt:0,historyDetails,historyText,duplicateCompare,duplicateBox,duplicateText,duplicateActions,
     duplicateSame,duplicateDifferent,date,clock,badge,select,meta,saving,
     realtorBadge,commentPreview,commentDetails,commentText,realtorMeta,editor,realtorSelect,comment,saveRealtor,realtorSaving,dirty:false};
   coverImage.addEventListener('error',()=>{
@@ -224,38 +230,54 @@ function renderRow(item, forceReview = false) {
     entry.comment.value = item.realtor_comment || '';
   }
   setText(entry.realtorSaving, pendingRealtors.has(id) ? 'Сохраняем…' : '');
-  visitUI.renderCell(cells[12],item);
-  row.hidden = selectedFilter !== 'all' && (selectedFilter === 'planned' ? !XataReview.nextVisit(item) : selectedFilter !== effectiveStatus);
+  visitUI.renderCells(cells[12],cells[13],item);
+  entry.compareLabel.hidden=effectiveStatus==='rejected';
+  entry.compareInput.checked=comparisonUI.has(id);
+  entry.compareInput.setAttribute('aria-label','В сравнение: квартира '+item.id);
+  entry.returnHint.hidden=item.realtor_status!=='rejected';
+  setText(entry.returnHint,'Возврат блокирует отказ риелтора. Его оценку меняет риелтор или администратор.');
+  row.hidden = effectiveStatus !== 'rejected' && selectedFilter !== 'all' && (selectedFilter === 'planned' || selectedFilter !== effectiveStatus);
   return row;
 }
 function renderListings() {
-  const body = document.querySelector('#listings');
-  const ordered = XataReview.ordered(records.values(), selectedSort);
-  const counts = XataReview.counts(ordered);
-  counts.planned=ordered.filter(item=>XataReview.nextVisit(item)).length;
+  const body=document.querySelector('#listings'),rejectedBody=document.querySelector('#rejected-listings');
+  const ordered=XataReview.ordered(records.values(),selectedSort);
+  const active=ordered.filter(item=>XataReview.effectiveStatus(item)!=='rejected');
+  const rejected=ordered.filter(item=>XataReview.effectiveStatus(item)==='rejected');
+  const counts=XataReview.counts(active);
+  counts.planned=XataReview.agenda(ordered).length;
   const planned=selectedFilter==='planned';
   document.querySelector('.table-wrap').hidden=planned;
   document.querySelector('#visit-agenda').hidden=!planned;
   if(planned)visitUI.agenda(ordered);
-  for (const item of ordered) { const row = renderRow(item); if (!row.parentNode) body.append(row); }
-  // Keep focused status controls/details in place during refresh.
-  if (!pendingReviews.size && !pendingRealtors.size && !pendingDuplicates.size && !document.activeElement?.matches('.review-select,.realtor-select,.realtor-comment')) {
-    let cursor = body.firstElementChild;
-    for (const item of ordered) {
-      const row = rows.get(XataReview.key(item)).row;
-      if (row !== cursor) body.insertBefore(row, cursor);
-      cursor = row.nextElementSibling;
+  comparisonUI.sync();
+  // Move existing nodes between the two bodies; never duplicate an apartment
+  // or rebuild a realtor draft when its effective status changes.
+  for(const item of ordered) {
+    const row=renderRow(item),target=XataReview.effectiveStatus(item)==='rejected'?rejectedBody:body;
+    if(row.parentNode!==target)target.append(row);
+  }
+  if(!pendingReviews.size&&!pendingRealtors.size&&!pendingDuplicates.size&&!document.activeElement?.matches('.review-select,.realtor-select,.realtor-comment')) {
+    for(const [target,items] of [[body,active],[rejectedBody,rejected]]) {
+      let cursor=target.firstElementChild;
+      for(const item of items) {
+        const row=rows.get(XataReview.key(item)).row;
+        if(row!==cursor)target.insertBefore(row,cursor);
+        cursor=row.nextElementSibling;
+      }
     }
   }
-  for (const node of document.querySelectorAll('[data-review-filter]')) {
-    node.setAttribute('aria-pressed', String(node.dataset.reviewFilter === selectedFilter));
-    setText(node.querySelector('span'), counts[node.dataset.reviewFilter]);
+  for(const node of document.querySelectorAll('[data-review-filter]')) {
+    node.setAttribute('aria-pressed',String(node.dataset.reviewFilter===selectedFilter));
+    setText(node.querySelector('span'),counts[node.dataset.reviewFilter]);
   }
-  setText(document.querySelector('#count'), ordered.length);
-  const empty = document.querySelector('#empty');
-  empty.hidden = (selectedFilter === 'all' ? counts.all : counts[selectedFilter]) > 0;
-  setText(empty, counts.all ? 'Нет объявлений с выбранным статусом.' : 'Пока нет сохранённых объявлений.');
+  setText(document.querySelector('#count'),active.length);
+  setText(document.querySelector('#rejected-count'),rejected.length);
+  const empty=document.querySelector('#empty');
+  empty.hidden=(selectedFilter==='all'?counts.all:counts[selectedFilter])>0;
+  setText(empty,active.length?'Нет объявлений с выбранным статусом.':'В основном списке пока нет объявлений.');
 }
+
 function acceptListing(item) {
   if (Number(item.identity_revision || 0) < identityRevision) return;
   identityRevision = Math.max(identityRevision,Number(item.identity_revision || 0));

@@ -39,6 +39,7 @@
   function value(item, key) {
     switch(key) {
       case 'id': return numeric(item.id);
+      case 'visit_date': return visitDate(item);
       case 'object': return [item.complex_name || item.title || '',item.address || ''].join(' ').trim() || null;
       case 'price': case 'area': return numeric(item[key]);
       case 'mortgage': return mortgage(item.price);
@@ -59,6 +60,26 @@
   }
   function nextVisit(item) {
     return (item.visits || []).filter(v=>v.status==='planned').sort((a,b)=>Date.parse(a.scheduled_at)-Date.parse(b.scheduled_at)||a.id-b.id)[0] || null;
+  }
+  function latestCompleted(item) {
+    return (item.visits || []).filter(v=>v.status==='completed')
+      .sort((a,b)=>(Date.parse(b.completed_at)||0)-(Date.parse(a.completed_at)||0)||b.id-a.id)[0] || null;
+  }
+  function displayVisit(item) { return nextVisit(item) || latestCompleted(item); }
+  function visitDate(item) {
+    const v=displayVisit(item);
+    return v ? numeric(Date.parse(v.status==='planned' ? v.scheduled_at : v.completed_at)) : null;
+  }
+  function overdue(visit,now=Date.now()) {
+    return visit?.status==='planned' && Date.parse(visit.scheduled_at)<now;
+  }
+  function agenda(items) {
+    return [...items].flatMap(item=>(item.visits||[]).filter(v=>v.status==='planned').map(visit=>({item,visit})))
+      .sort((a,b)=>Date.parse(a.visit.scheduled_at)-Date.parse(b.visit.scheduled_at)||a.visit.id-b.visit.id);
+  }
+  function pricePerMeter(item) {
+    const price=numeric(item.price),area=numeric(item.area);
+    return price!=null && area!=null && area>0 ? price/area : null;
   }
   function defaultOrder(a,b) {
     return (rank[effectiveStatus(a)] ?? 0) - (rank[effectiveStatus(b)] ?? 0)
@@ -89,7 +110,7 @@
     for (const item of items) { result.all++; result[effectiveStatus(item)]++; }
     return result;
   }
-  const api = {key,reconcile,merge,ordered,cycleSort,counts,mortgage,minutes,effectiveStatus,nextVisit};
+  const api = {key,reconcile,merge,ordered,cycleSort,counts,mortgage,minutes,effectiveStatus,nextVisit,latestCompleted,displayVisit,visitDate,overdue,agenda,pricePerMeter};
   root.XataReview = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

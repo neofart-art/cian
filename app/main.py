@@ -386,7 +386,7 @@ async def protect_origin(request, call_next):
 
 STATIC = Path(__file__).parent / 'static'
 ASSET_VERSIONS = {name: hashlib.sha256((STATIC / name).read_bytes()).hexdigest()[:16]
-                  for name in ('app.js', 'visits.js', 'review-state.js', 'login.js', 'style.css', 'xata-logo.svg', 'xata-mark.svg')}
+                  for name in ('app.js', 'visits.js', 'compare.js', 'review-state.js', 'login.js', 'style.css', 'xata-logo.svg', 'xata-mark.svg')}
 
 
 def html_document(name):
@@ -772,12 +772,13 @@ def export():
     visits_sheet = book.create_sheet('Просмотры')
     visits_sheet.append(['Property ID','Текущий CIAN ID','Адрес','ID просмотра','Дата встречи (UTC)',
                          'Состояние','Результат','До просмотра','После просмотра','Состоялся (UTC)',
-                         'Изменил','Изменено (UTC)'])
+                         'Изменил','Изменено (UTC)','Причины отказа'])
     for item in items:
         for visit in item['visits']:
             values = [item['property_id'],item['id'],item['address'],visit['id'],visit['scheduled_at'],
                       visit['status'],visit['outcome'],visit['preparation'],visit['comment'],
-                      visit['completed_at'],visit['updated_by_name'] or visit['updated_by_username'],visit['updated_at']]
+                      visit['completed_at'],visit['updated_by_name'] or visit['updated_by_username'],visit['updated_at'],
+                      ', '.join(viewings.REJECTION_REASONS[reason] for reason in visit['rejection_reasons'])]
             visits_sheet.append([("'" + value if isinstance(value,str) and value.startswith(('=','+','-','@')) else value) for value in values])
     visits_sheet.freeze_panes = 'A2'
     visits_sheet.auto_filter.ref = visits_sheet.dimensions

@@ -87,7 +87,7 @@ def test_shared_review_ui_login_roles_refresh_and_layout(tmp_path, monkeypatch):
                 await expect(page.locator('#identity')).to_contain_text('Риелтор')
                 assert await page.locator('[data-admin]:visible').count() == 0
                 assert await page.locator('#listing-table th').all_text_contents() == [
-                    'Фото','№ ЦИАН','ЖК / адрес','Цена','Ипотека / мес.','Площадь','Этаж','Метро','До метро','Добавлено','Статус','Риелтор','Просмотр']
+                    'Фото','№ ЦИАН','ЖК / адрес','Цена','Ипотека / мес.','Площадь','Этаж','Метро','До метро','Добавлено','Статус','Риелтор','Дата просмотра','Результат просмотра']
                 assert await page.locator('.table-wrap').evaluate('el => el.scrollWidth <= el.clientWidth')
                 assert await page.evaluate('document.documentElement.scrollWidth <= innerWidth')
                 await expect(page.locator('#last-sync')).to_contain_text('16.10.2026')
@@ -121,8 +121,11 @@ def test_shared_review_ui_login_roles_refresh_and_layout(tmp_path, monkeypatch):
                 await expect(row.locator('.review-label')).to_have_text('Не подходит')
                 await expect(row).to_have_class('review-rejected')
                 rejected_background = await row.locator('td').first.evaluate('el => getComputedStyle(el).backgroundColor')
+                await expect(row).to_be_hidden()
+                await page.locator('#rejected-section > summary').click()
                 await row.locator('.review-select').select_option('new')
                 await expect(row.locator('.review-label')).to_have_text('НОВОЕ')
+                await page.locator('#rejected-section > summary').click()
                 await page.locator('#logout').click()
                 await page.wait_for_url('https://xata.test/login')
                 await page.locator('#username').fill('expert')
@@ -146,11 +149,11 @@ def test_shared_review_ui_login_roles_refresh_and_layout(tmp_path, monkeypatch):
                 await expect(row).to_have_class('review-rejected')
                 assert await row.locator('td').first.evaluate('el => getComputedStyle(el).backgroundColor') == rejected_background
                 await expect(row.locator('.review-label')).to_have_text('НОВОЕ')
-                await expect(page.locator('[data-review-filter="rejected"] span')).to_have_text('1')
+                await expect(page.locator('#rejected-count')).to_have_text('1')
                 await expect(page.locator('[data-review-filter="new"] span')).to_have_text('2')
                 await page.locator('[data-review-filter="new"]').click()
                 await expect(row).to_be_hidden()
-                await page.locator('[data-review-filter="rejected"]').click()
+                await page.locator('#rejected-section > summary').click()
                 await expect(row).to_be_visible()
                 await page.locator('[data-review-filter="all"]').click()
                 await expect(row.locator('.realtor-meta')).to_contain_text('Эксперт')
@@ -164,11 +167,13 @@ def test_shared_review_ui_login_roles_refresh_and_layout(tmp_path, monkeypatch):
                 await expect(row).to_have_class('review-rejected')
                 await page.reload()
                 await expect(row).to_have_class('review-rejected')
+                await expect(row).to_be_hidden()
+                await page.locator('#rejected-section > summary').click()
                 await row.locator('.realtor-editor > summary').click()
                 await row.locator('.realtor-select').select_option('approved')
                 await row.locator('.realtor-editor button').click()
                 await expect(row).to_have_class('review-new')
-                await expect(page.locator('[data-review-filter="rejected"] span')).to_have_text('0')
+                await expect(page.locator('#rejected-count')).to_have_text('0')
                 await expect(page.locator('[data-review-filter="new"] span')).to_have_text('3')
                 saved_item = next(item for item in client.get('/api/state').json()['listings'] if str(item['id']) == '123')
                 assert saved_item['review_status'] == 'new'
@@ -216,17 +221,19 @@ def test_shared_review_ui_login_roles_refresh_and_layout(tmp_path, monkeypatch):
                 await page.locator('[data-review-filter="planned"]').click()
                 await expect(page.locator('#visit-agenda .visit-card')).to_have_count(1)
                 await expect(page.locator('#visit-agenda')).to_contain_text('Укажите результат')
-                await page.locator('#visit-agenda').get_by_role('button',name='Итог просмотра',exact=True).click()
-                await page.locator('#visit-outcome').select_option('rejected')
+                await page.locator('#visit-agenda').get_by_role('button',name='Записать результат',exact=True).click()
+                await page.locator('[data-visit-outcome="rejected"]').click()
                 await page.locator('#visit-comment').fill('<script>Не понравилось</script> · Шумно')
                 await page.locator('#visit-save').click()
                 await expect(page.locator('#visit-dialog')).not_to_be_visible()
-                await page.locator('[data-review-filter="rejected"]').click()
+                await page.locator('#rejected-section > summary').click()
                 await expect(visit_row).to_be_visible()
                 await expect(visit_row).to_have_class('review-rejected')
                 await expect(visit_row.locator('.review-label')).to_have_text('Не подходит')
                 await expect(visit_row.locator('td').last).to_contain_text('Не понравилось')
                 await page.reload()
+                await expect(visit_row).to_be_hidden()
+                await page.locator('#rejected-section > summary').click()
                 await expect(visit_row.locator('td').last).to_contain_text('Не понравилось')
                 await visit_row.locator('td').last.get_by_role('button',name='Назначить повторный',exact=True).click()
                 await page.locator('#visit-date').fill('2026-11-01T18:30')
@@ -464,3 +471,197 @@ def test_cover_column_modal_placeholder_refresh_and_hidden_marketing(tmp_path,mo
     with main.database() as conn:
         data=conn.execute("SELECT description,card_text FROM listings WHERE id='8100'").fetchone()
         assert tuple(data)==('NEVER_SHOW_MARKETING','NEVER_SHOW_MARKETING')
+
+
+def test_viewing_dates_rejections_agenda_conflicts_and_comparison_on_phone(tmp_path,monkeypatch):
+    from PIL import Image
+    from app import covers as images
+    import io
+    monkeypatch.setenv('DATA_DIR',str(tmp_path));monkeypatch.setenv('APP_USER','owner')
+    monkeypatch.setenv('APP_PASSWORD','long-test-password');monkeypatch.setenv('BROWSER_SCHEDULE_ENABLED','false')
+    monkeypatch.delenv('PUBLIC_URL',raising=False)
+    from app import main
+    importlib.reload(main)
+    def picture(_):
+        stream=io.BytesIO()
+        with Image.new('RGB',(600,400),'green') as image:image.save(stream,format='JPEG')
+        return stream.getvalue()
+    monkeypatch.setattr(images,'download_cover',picture)
+    with main.database() as conn:
+        main.save_items(conn,[{'id':str(key),'url':'https://cian.ru/sale/flat/'+str(key)+'/',
+            'title':'1-комнатная квартира','complex_name':'ЖК '+str(key),'address':'Москва, ул. Тестовая, д. '+str(key),
+            'price':None if key==9103 else 12000000,'area':0 if key==9103 else 40,'floor':'7/16',
+            'metro':'Сокол','metro_time':'8 мин. пешком',
+            **({'cover_image_url':'https://images.cdn-cian.ru/images/one.jpg'} if key==9100 else {})}
+            for key in range(9100,9106)],'2026-10-26T10:00:00+00:00')
+    main.covers.sync_one('9100')
+    with TestClient(main.app,base_url='https://xata.test') as client:
+        sign_in(client)
+        assert client.post('/api/listings/9102/realtor-review',json={'status':'rejected','comment':'Документы требуют проверки'}).status_code==200
+        assert client.post('/api/users',json={'username':'family','display_name':'Семья','password':'12345678','role':'reviewer'}).status_code==201
+        sign_in(client,'family','12345678')
+        def state():
+            return {item['id']:item for item in client.get('/api/state').json()['listings']}
+        def visit(key,**changes):
+            item=state()[key]
+            response=client.post('/api/listings/'+key+'/visits',json={
+                'property_id':item['property_id'],'status':'planned','scheduled_at':'2026-10-01T18:30:00+03:00',
+                'preparation':'До поездки: <img src=x onerror=alert(1)> проверить окна',**changes})
+            assert response.status_code==200,response.text
+            return response.json()['visits'][0]
+        past=visit('9100')
+        visit('9100',scheduled_at='2050-11-01T18:30:00+03:00')
+        visit('9101',status='completed',outcome='liked',completed_at='2026-09-01T18:30:00+03:00',comment='Понравилась тишина')
+        cancelled=visit('9102',scheduled_at='2030-11-01T18:30:00+03:00')
+        async def scenario():
+            from playwright.async_api import async_playwright,expect
+            writes=[]
+            async def bridge(route):
+                request=route.request;parsed=urlsplit(request.url)
+                assert parsed.hostname=='xata.test'
+                path=parsed.path+('?' + parsed.query if parsed.query else '')
+                if request.method not in ('GET','HEAD'):writes.append((request.method,path))
+                headers={k:v for k,v in request.headers.items() if k.lower() in ('content-type','origin','sec-fetch-site','x-csrf-token')}
+                response=client.request(request.method,path,headers=headers,content=request.post_data_buffer,follow_redirects=False)
+                forwarded={k:v for k,v in response.headers.items() if k.lower() not in ('set-cookie','content-length','content-encoding','transfer-encoding')}
+                await route.fulfill(status=response.status_code,headers=forwarded,body=response.content)
+            async with async_playwright() as playwright:
+                browser=await playwright.chromium.launch(headless=True)
+                context=await browser.new_context(viewport={'width':1440,'height':1100})
+                await context.route('**/*',bridge)
+                page=await context.new_page()
+                errors=[];page.on('pageerror',lambda error:errors.append(str(error)))
+                await page.goto('https://xata.test/')
+                await expect(page.locator('#listings tr')).to_have_count(5)
+                await expect(page.locator('#rejected-listings tr')).to_have_count(1)
+                assert not await page.locator('#rejected-section').evaluate('el=>el.open')
+                await expect(page.locator('#rejected-count')).to_have_text('1')
+                await expect(page.locator('[data-review-filter="all"] span')).to_have_text('5')
+                await expect(page.locator('[data-review-filter="planned"] span')).to_have_text('3')
+                row=page.locator('tr[data-listing-id="9100"]')
+                await expect(row.locator('td').nth(12)).to_contain_text('Укажите результат просмотра')
+                sort=page.locator('#listing-table [data-sort="visit_date"]')
+                await sort.click()
+                assert (await page.locator('#listings tr').evaluate_all('rows=>rows.map(r=>r.dataset.listingId)'))[:2]==['9101','9100']
+                await sort.click()
+                assert (await page.locator('#listings tr').evaluate_all('rows=>rows.map(r=>r.dataset.listingId)'))[:2]==['9100','9101']
+                await sort.click()
+                assert await sort.locator('..').get_attribute('aria-sort')=='none'
+                assert not await page.locator('#rejected-section').evaluate('el=>el.open')
+                await page.set_viewport_size({'width':390,'height':844})
+                await page.locator('[data-review-filter="planned"]').click()
+                cards=page.locator('#visit-agenda .visit-card')
+                await expect(cards).to_have_count(3)
+                assert await cards.evaluate_all('cards=>cards.map(c=>c.dataset.visitId)')==[str(past['id']),str(cancelled['id']),str(past['id']+1)]
+                await expect(cards.first.locator('.visit-preparation')).to_contain_text('проверить окна')
+                await expect(cards.first.locator('.visit-overdue')).to_have_text('Укажите результат просмотра')
+                refused=page.locator('#visit-agenda .visit-card[data-listing-id="9102"]')
+                await expect(refused.locator('.visit-rejected')).to_contain_text('Не подходит')
+                await refused.get_by_role('button',name='Отменить',exact=True).click()
+                await page.locator('#visit-save').click()
+                await expect(page.locator('#visit-dialog')).to_be_hidden()
+                await expect(cards).to_have_count(2)
+                await expect(page.locator('[data-review-filter="planned"] span')).to_have_text('2')
+                assert state()['9102']['realtor_status']=='rejected'
+                assert state()['9100']['review_status']=='new'
+                card=page.locator('#visit-agenda .visit-card[data-visit-id="'+str(past['id'])+'"]')
+                await card.get_by_role('button',name='Записать результат',exact=True).click()
+                await page.locator('[data-visit-outcome="rejected"]').click()
+                await page.locator('#visit-date').fill('2026-10-10T19:45')
+                await page.locator('#visit-comment').fill('<b>После поездки</b>: шумно')
+                await page.locator('#visit-preparation').fill('До поездки: спросить про документы')
+                await page.locator('#visit-reasons input[value="noise"]').check()
+                await page.locator('#visit-reasons input[value="documents"]').check()
+                item=state()['9100']
+                response=client.patch('/api/listings/9100/visits/'+str(past['id']),json={
+                    'property_id':item['property_id'],'version':past['version'],'status':'planned',
+                    'scheduled_at':past['scheduled_at'],'preparation':'Заметка другого пользователя'})
+                assert response.status_code==200
+                await page.evaluate('refresh(true)')
+                await expect(page.locator('#visit-comment')).to_have_value('<b>После поездки</b>: шумно')
+                await expect(page.locator('#visit-preparation')).to_have_value('До поездки: спросить про документы')
+                await page.locator('#visit-save').click()
+                await expect(page.locator('#visit-error')).to_contain_text('Просмотр уже изменён')
+                await expect(page.locator('#visit-comment')).to_have_value('<b>После поездки</b>: шумно')
+                assert next(v for v in state()['9100']['visits'] if v['id']==past['id'])['status']=='planned'
+                await page.locator('#visit-close').click()
+                await card.get_by_role('button',name='Записать результат',exact=True).click()
+                await page.locator('[data-visit-outcome="rejected"]').click()
+                await page.locator('#visit-date').fill('2026-10-10T19:45')
+                await page.locator('#visit-comment').fill('<b>После поездки</b>: шумно')
+                await page.locator('#visit-preparation').fill('До поездки: спросить про документы')
+                await page.locator('#visit-reasons input[value="noise"]').check()
+                await page.locator('#visit-reasons input[value="documents"]').check()
+                assert await page.locator('#visit-dialog').evaluate('el=>el.scrollWidth<=el.clientWidth')
+                writes_before=len(writes)
+                await page.evaluate("const form=document.querySelector('#visit-form');form.requestSubmit();form.requestSubmit();")
+                await expect(page.locator('#visit-dialog')).to_be_hidden()
+                assert len(writes)==writes_before+1
+                await expect(page.locator('#rejected-count')).to_have_text('2')
+                assert not await page.locator('#rejected-section').evaluate('el=>el.open')
+                assert len(state()['9100']['visits'])==2
+                result=next(v for v in state()['9100']['visits'] if v['id']==past['id'])
+                assert result['rejection_reasons']==['noise','documents']
+                assert result['completed_at']=='2026-10-10T16:45:00+00:00'
+                await page.locator('[data-review-filter="all"]').click()
+                await expect(page.locator('#listings tr[data-listing-id="9100"]')).to_have_count(0)
+                await page.locator('#rejected-section > summary').click()
+                await expect(row).to_be_visible()
+                await expect(row.locator('.visit-rejection-reasons').first).to_contain_text('Шум, Документы')
+                assert await row.locator('b').count()==0
+                await row.locator('.review-select').select_option('liked')
+                await expect(page.locator('#listings tr[data-listing-id="9100"]')).to_have_count(1)
+                # Old negative history alone does not prevent returning.
+                assert state()['9100']['visits'][1]['outcome']=='rejected'
+                refused_row=page.locator('tr[data-listing-id="9102"]')
+                await refused_row.locator('.review-select').select_option('liked')
+                await expect(refused_row.locator('.return-hint')).to_contain_text('отказ риелтора')
+                await expect(refused_row.locator('.realtor-editor')).to_be_hidden()
+                await expect(page.locator('#listings tr[data-listing-id="9102"]')).to_have_count(0)
+                await page.locator('#rejected-section > summary').click()
+                await page.locator('[data-review-filter="new"]').click()
+                assert not await page.locator('#rejected-section').evaluate('el=>el.open')
+                await page.locator('[data-review-filter="all"]').click()
+                before=state()
+                write_count=len(writes)
+                for key in ('9100','9101','9103','9104'):
+                    await page.locator('tr[data-listing-id="'+key+'"] .compare-select').check()
+                await page.locator('tr[data-listing-id="9105"] .compare-select').click()
+                await expect(page.locator('tr[data-listing-id="9105"] .compare-select')).not_to_be_checked()
+                await expect(page.locator('#compare-count')).to_have_text('4')
+                await expect(page.locator('#compare-message')).to_contain_text('не более четырёх')
+                await page.locator('#compare-open').click()
+                await expect(page.locator('#compare-dialog')).to_be_visible()
+                await expect(page.locator('#compare-table thead th')).to_have_count(5)
+                await expect(page.locator('#compare-table .compare-cover')).to_have_count(1)
+                await page.wait_for_function("document.querySelector('#compare-table img').naturalWidth>0")
+                square=page.get_by_role('rowheader',name='Цена за м²',exact=True).locator('..')
+                await expect(square.locator('td').first).to_contain_text('300')
+                await expect(square.locator('td').nth(2)).to_have_text('—')
+                result_row=page.get_by_role('rowheader',name='Результат просмотра',exact=True).locator('..')
+                await expect(result_row.locator('td').first).to_have_text('Не понравилось')
+                await expect(result_row.locator('td').nth(1)).to_have_text('Понравилось')
+                await expect(result_row.locator('td').nth(2)).to_have_text('—')
+                assert await page.locator('#compare-table b').count()==0
+                assert await page.locator('#compare-scroll').evaluate('el=>el.scrollWidth>el.clientWidth')
+                assert await page.locator('#compare-dialog').evaluate('el=>el.scrollWidth<=el.clientWidth')
+                assert await page.evaluate('document.documentElement.scrollWidth<=innerWidth')
+                assert len(writes)==write_count and state()==before
+                assert client.post('/api/listings/9100/review',json={'status':'rejected'}).status_code==200
+                await page.evaluate('refresh(true)')
+                await expect(page.locator('#compare-count')).to_have_text('3')
+                await expect(page.locator('#compare-table thead th')).to_have_count(4)
+                await expect(page.locator('#compare-dialog-message')).to_contain_text('убрана из сравнения')
+                await page.locator('#compare-close').click()
+                await page.reload()
+                await expect(page.locator('#rejected-count')).to_have_text('2')
+                assert not await page.locator('#rejected-section').evaluate('el=>el.open')
+                await page.locator('#rejected-section > summary').click()
+                await expect(row.locator('.visit-rejection-reasons').first).to_contain_text('Шум, Документы')
+                persisted=next(v for v in state()['9100']['visits'] if v['id']==past['id'])
+                assert persisted['preparation']=='До поездки: спросить про документы'
+                assert persisted['comment']=='<b>После поездки</b>: шумно'
+                assert await page.evaluate('document.documentElement.scrollWidth<=innerWidth')
+                assert errors==[]
+                await context.close();await browser.close()
+        asyncio.run(scenario())
