@@ -827,11 +827,13 @@ def test_confirmed_calendar_date_drafts_permissions_mobile_and_timezone(tmp_path
                     }""")
                     assert fit['text']<=fit['available']+1,fit
                     for action in (clear,ok):
-                        assert await action.evaluate("""button=>{
+                        action_fit=await action.evaluate("""button=>{
                             const s=getComputedStyle(button),ctx=document.createElement('canvas').getContext('2d');
                             ctx.font=s.fontWeight+' '+s.fontSize+' '+s.fontFamily;
-                            return ctx.measureText(button.textContent).width<=button.clientWidth-parseFloat(s.paddingLeft)-parseFloat(s.paddingRight)+1;
+                            return {label:button.textContent,text:ctx.measureText(button.textContent).width,
+                              available:button.clientWidth-parseFloat(s.paddingLeft)-parseFloat(s.paddingRight),font:s.fontSize,width:button.clientWidth};
                         }""")
+                        assert action_fit['text']<=action_fit['available']+1,action_fit
                     assert (await field.bounding_box())['width']<140
                     if width==390:
                         for button in (clear,ok):

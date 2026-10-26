@@ -140,7 +140,8 @@ globalThis.XataVisits = {create({getItem,getUser,saveItem,request,jsonOptions,re
         });clear.className='visit-date-clear secondary';
         const ok=button('ОК',()=>persist());ok.className='visit-date-ok';
         editor.input=input;editor.picker=picker;editor.status=status;editor.clear=clear;editor.ok=ok;
-        control.append(input,picker);controls.append(control,clear,ok);cell.append(controls,status);
+        const actions=el('div',null,'visit-date-actions');
+        control.append(input,picker);actions.append(clear,ok);controls.append(control,actions);cell.append(controls,status);
         const changed=()=>{
           editor.dirty=true;status.textContent='Нажмите «ОК», чтобы сохранить дату.';
         };
