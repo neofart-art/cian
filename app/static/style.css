@@ -171,9 +171,8 @@ footer{font-size:13px}
 .visit-date-editor{display:flex;align-items:center;gap:4px;width:188px;max-width:100%}
 .visit-date-control{position:relative;flex:0 1 112px;width:112px;min-width:0}
 .visit-date-input{display:block;width:100%;min-width:0;max-width:100%;height:36px;min-height:36px;padding:6px 22px 6px 4px;font-size:14px;line-height:20px;font-variant-numeric:tabular-nums}
-.visit-date-picker{position:absolute;right:2px;top:2px;display:block;width:18px;min-width:0;max-width:18px;height:32px;min-height:32px;padding:0;border:0;background:transparent;color:transparent;font-size:0;cursor:pointer}
-.visit-date-picker::-webkit-datetime-edit{display:none}
-.visit-date-picker::-webkit-calendar-picker-indicator{width:14px;height:16px;margin:0;padding:2px;opacity:1}
+.visit-date-picker{position:absolute;right:2px;top:2px;display:flex;align-items:center;justify-content:center;width:18px;min-width:0;max-width:18px;height:32px;min-height:32px;padding:0;border:0;background:transparent;color:#294b3e;cursor:pointer}
+.visit-date-picker svg{display:block;width:16px;height:16px;pointer-events:none}
 .visit-date-clear,.visit-date-ok{height:36px;min-height:36px;padding:0 4px;font-size:12px;line-height:18px;white-space:nowrap}
 .visit-date-actions{display:flex;flex-direction:column;gap:4px;flex:0 0 72px;width:72px}
 .visit-date-clear,.visit-date-ok{width:100%}
@@ -204,4 +203,23 @@ footer{font-size:13px}
   .visit-date-clear,.visit-date-ok{height:44px;min-height:44px;font-size:14px}
   .visit-date-clear{font-size:12px}
   :is(#listing-table,#rejected-table):has(.visit-date-input) th:nth-child(13){width:214px}
+}
+
+/* The calendar is a top-layer dropdown, so table scrolling cannot clip it. */
+.visit-calendar{position:fixed;inset:auto;margin:0;width:min(296px,calc(100vw - 16px));max-height:calc(100vh - 16px);overflow:auto;padding:12px;border:1px solid #b8c5b7;border-radius:9px;background:#fffefa;color:#263d37;box-shadow:0 6px 24px #263d3733;z-index:20}
+.visit-calendar-head{display:flex;align-items:center;gap:4px;margin-bottom:8px}
+.visit-calendar-head strong{flex:1;min-width:0;text-align:center;font-size:14px;font-weight:600}
+.visit-calendar button{padding:0;min-height:36px;height:36px;font-size:14px;border-radius:5px;background:transparent;color:inherit}
+.visit-calendar-head button{flex:0 0 32px;width:32px}
+.visit-calendar table{width:100%;table-layout:fixed;border-collapse:separate;border-spacing:2px}
+.visit-calendar th,.visit-calendar td{width:14.285%;padding:0;border:0;text-align:center;vertical-align:middle;overflow-wrap:normal}
+.visit-calendar th{font-size:12px;text-transform:none;letter-spacing:normal;color:#627067}
+.visit-calendar td button{display:block;width:100%}
+.visit-calendar-day[aria-current=date]{outline:1px solid #658b60;outline-offset:-2px}
+.visit-calendar-day[aria-pressed=true]{background:#294b3e;color:#fff}
+.visit-calendar button:hover{background:#e4eadf;color:#263d37}
+@media(max-width:767px),(pointer:coarse){
+  .visit-calendar{width:min(354px,calc(100vw - 16px))}
+  .visit-calendar button{height:44px;min-height:44px;font-size:16px}
+  .visit-calendar-head button{flex-basis:44px;width:44px}
 }

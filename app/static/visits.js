@@ -121,22 +121,114 @@ globalThis.XataVisits = {create({getItem,getUser,saveItem,request,jsonOptions,re
     if(agenda&&canEdit())box.append(actions(item,visit));
     return box;
   }
+  // One shared calendar, independent of native date-input rendering. It only
+  // chooses a draft day; the existing OK handler remains the sole write path.
+  const calendarPopup=(()=>{
+    const popup=el('div',null,'visit-calendar');popup.id='visit-calendar-popup';
+    const native=typeof popup.showPopover==='function';
+    if(native)popup.setAttribute('popover','auto');else popup.hidden=true;
+    popup.setAttribute('role','group');popup.setAttribute('aria-label','Календарь просмотра');
+    const head=el('div',null,'visit-calendar-head'),title=el('strong');
+    title.setAttribute('aria-live','polite');
+    let active=null,year=2000,month=0;
+    const opened=()=>native?popup.matches(':popover-open'):!popup.hidden;
+    const close=(focus=false)=>{
+      const trigger=active?.trigger;active=null;
+      if(trigger)trigger.setAttribute('aria-expanded','false');
+      if(native&&opened())popup.hidePopover();else if(!native)popup.hidden=true;
+      if(focus&&trigger?.isConnected)trigger.focus({preventScroll:true});
+    };
+    const previous=button('‹',()=>move(-1)),next=button('›',()=>move(1)),dismiss=button('×',()=>close(true));
+    previous.setAttribute('aria-label','Предыдущий месяц');next.setAttribute('aria-label','Следующий месяц');
+    dismiss.setAttribute('aria-label','Закрыть календарь');
+    head.append(previous,title,next,dismiss);
+    const table=el('table');table.setAttribute('aria-label','Дни месяца');
+    const thead=el('thead'),week=el('tr'),body=el('tbody');
+    for(const text of ['Пн','Вт','Ср','Чт','Пт','Сб','Вс']) {const th=el('th',text);th.scope='col';week.append(th);}
+    thead.append(week);table.append(thead,body);popup.append(head,table);document.body.append(popup);
+    function place() {
+      if(!active||!opened())return;
+      if(!active.trigger.isConnected) {close();return;}
+      const box=active.trigger.getBoundingClientRect(),size=popup.getBoundingClientRect();
+      popup.style.left=Math.max(8,Math.min(box.right-size.width,innerWidth-size.width-8))+'px';
+      popup.style.top=Math.max(8,box.bottom+6+size.height<=innerHeight-8?box.bottom+6:box.top-size.height-6)+'px';
+    }
+    function draw() {
+      title.textContent=new Intl.DateTimeFormat('ru-RU',{month:'long',year:'numeric',timeZone:'UTC'}).format(new Date(Date.UTC(year,month,1)));
+      previous.disabled=year===2000&&month===0;next.disabled=year===2100&&month===11;
+      body.replaceChildren();
+      const start=(new Date(Date.UTC(year,month,1)).getUTCDay()+6)%7;
+      const count=new Date(Date.UTC(year,month+1,0)).getUTCDate(),today=XataReview.moscowDay(Date.now());
+      let row;
+      for(let index=0;index<Math.ceil((start+count)/7)*7;index++) {
+        if(index%7===0) {row=el('tr');body.append(row);}
+        const cell=el('td'),day=index-start+1;row.append(cell);
+        if(day<1||day>count)continue;
+        const value=String(year)+'-'+String(month+1).padStart(2,'0')+'-'+String(day).padStart(2,'0');
+        const choice=button(String(day),()=>{
+          const selected=active;
+          if(!selected||!selected.trigger.isConnected||!canEditDate()) {close();return;}
+          close();selected.choose(value);
+        });
+        choice.className='visit-calendar-day';choice.dataset.calendarDate=value;
+        choice.setAttribute('aria-label',XataReview.displayDay(value));
+        choice.setAttribute('aria-pressed',String(value===active?.selected));
+        if(value===today)choice.setAttribute('aria-current','date');
+        cell.append(choice);
+      }
+      place();
+    }
+    function move(delta) {
+      const date=new Date(Date.UTC(year,month+delta,1));
+      if(date.getUTCFullYear()<2000||date.getUTCFullYear()>2100)return;
+      year=date.getUTCFullYear();month=date.getUTCMonth();draw();
+    }
+    function toggle(trigger,selected,choose) {
+      if(opened()&&active?.trigger===trigger){close();return;}
+      close();
+      const value=selected||XataReview.moscowDay(Date.now());
+      year=Number(value.slice(0,4));month=Number(value.slice(5,7))-1;
+      active={trigger,selected,choose};draw();
+      trigger.setAttribute('aria-expanded','true');
+      if(native)popup.showPopover();else popup.hidden=false;
+      place();
+      (popup.querySelector('[data-calendar-date="'+value+'"]')||popup.querySelector('.visit-calendar-day'))?.focus({preventScroll:true});
+    }
+    document.addEventListener('pointerdown',event=>{
+      if(active&&!popup.contains(event.target)&&!active.trigger.contains(event.target))close();
+    });
+    document.addEventListener('focusin',event=>{if(active&&event.target.closest?.('dialog[open]'))close();});
+    document.addEventListener('keydown',event=>{
+      if(event.key==='Escape'&&active) {event.preventDefault();close(true);}
+    });
+    popup.addEventListener('toggle',()=>{if(!opened()&&active)close();});
+    window.addEventListener('resize',place);window.addEventListener('scroll',place,true);
+    return {toggle,owns:trigger=>active?.trigger===trigger&&opened(),
+      closeFor:trigger=>{if(active?.trigger===trigger)close();}};
+  })();
   function renderDate(cell,item) {
     const shown=XataReview.displayVisit(item),raw=shown?(shown.status==='planned'?shown.scheduled_at:shown.completed_at):null;
     const day=XataReview.moscowDay(raw),editable=canEditDate();
     let editor=dateEditors.get(cell);
     if(!editor||editor.editable!==editable) {
+      if(editor?.picker)calendarPopup.closeFor(editor.picker);
       cell.replaceChildren();
       editor={editable,dirty:false,saving:false,failed:false};
       if(editable) {
         const controls=el('div',null,'visit-date-editor'),control=el('div',null,'visit-date-control');
         const input=el('input');input.type='text';input.className='visit-date-input';input.inputMode='numeric';
         input.placeholder='ДД.ММ.ГГГГ';input.maxLength=10;input.autocomplete='off';
-        const picker=el('input');picker.type='date';picker.className='visit-date-picker';
-        picker.min='2000-01-01';picker.max='2100-12-31';
+        const picker=el('button');picker.type='button';picker.className='visit-date-picker';
+        picker.setAttribute('aria-expanded','false');picker.setAttribute('aria-controls','visit-calendar-popup');
+        const svg=document.createElementNS('http://www.w3.org/2000/svg','svg'),path=document.createElementNS('http://www.w3.org/2000/svg','path');
+        svg.setAttribute('viewBox','0 0 24 24');svg.setAttribute('aria-hidden','true');svg.setAttribute('focusable','false');
+        path.setAttribute('d','M8 2v4m8-4v4M3 10h18M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z');
+        path.setAttribute('fill','none');path.setAttribute('stroke','currentColor');path.setAttribute('stroke-width','2');
+        path.setAttribute('stroke-linecap','round');path.setAttribute('stroke-linejoin','round');
+        svg.append(path);picker.append(svg);
         const status=el('small',null,'visit-date-status');status.setAttribute('role','status');status.setAttribute('aria-live','polite');
         const clear=button('Очистить',()=>{
-          input.value='';picker.value='';editor.dirty=true;status.textContent='Нажмите «ОК», чтобы сохранить очистку.';
+          calendarPopup.closeFor(picker);input.value='';picker.value='';editor.dirty=true;status.textContent='Нажмите «ОК», чтобы сохранить очистку.';
         });clear.className='visit-date-clear secondary';
         const ok=button('ОК',()=>persist());ok.className='visit-date-ok';
         editor.input=input;editor.picker=picker;editor.status=status;editor.clear=clear;editor.ok=ok;
@@ -153,13 +245,15 @@ globalThis.XataVisits = {create({getItem,getUser,saveItem,request,jsonOptions,re
         picker.addEventListener('change',()=>{
           input.value=picker.value?XataReview.displayDay(picker.value):'';changed();
         });
-        picker.addEventListener('click',event=>{
-          if(typeof picker.showPicker==='function') {
-            try {picker.showPicker();event.preventDefault();} catch(_) { /* Native fallback. */ }
-          }
+        picker.addEventListener('click',()=>{
+          if(editor.saving||!canEditDate())return;
+          calendarPopup.toggle(picker,XataReview.parseDay(input.value),value=>{
+            picker.value=value;picker.dispatchEvent(new Event('change',{bubbles:true}));input.focus({preventScroll:true});
+          });
         });
         const persist=async()=>{
           if(editor.saving||!editor.baseline)return;
+          calendarPopup.closeFor(picker);
           const text=input.value.trim(),selected=text?XataReview.parseDay(text):null;
           if(text&&!selected) {status.textContent='Укажите корректную дату в формате ДД.ММ.ГГГГ (2000–2100).';return;}
           if(selected===editor.original&&!editor.failed) {
@@ -190,7 +284,7 @@ globalThis.XataVisits = {create({getItem,getUser,saveItem,request,jsonOptions,re
       editor.input.setAttribute('aria-label','Дата просмотра квартиры '+item.id+' (ДД.ММ.ГГГГ, Москва)');
       editor.picker.setAttribute('aria-label','Выбрать дату просмотра квартиры '+item.id);
       // Draft and original target survive input/change, blur and background polls.
-      if(!editor.saving&&!editor.dirty&&!editor.failed&&(editor.forceSync||!cell.contains(document.activeElement))) {
+      if(!editor.saving&&!editor.dirty&&!editor.failed&&(editor.forceSync||(!cell.contains(document.activeElement)&&!calendarPopup.owns(editor.picker)))) {
         editor.input.value=day?XataReview.displayDay(day):'';editor.picker.value=day||'';editor.original=day;
         editor.baseline={listingId:item.id,propertyId:item.property_id,revision:item.visits_version||0,
           visitId:shown?.id||null,requestId:shown?null:crypto.randomUUID()};

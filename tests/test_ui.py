@@ -726,7 +726,7 @@ def test_confirmed_calendar_date_drafts_permissions_mobile_and_timezone(tmp_path
                 await expect(field).to_be_visible()
                 assert await field.get_attribute('type')=='text'
                 assert await field.get_attribute('placeholder')=='ДД.ММ.ГГГГ'
-                assert await picker.get_attribute('type')=='date'
+                assert await picker.get_attribute('type')=='button'
                 await expect(result_cell.locator('button')).to_have_count(0)
                 # Neither typing, calendar selection, blur nor polls may save.
                 await field.fill('26.10.2026')
@@ -735,8 +735,10 @@ def test_confirmed_calendar_date_drafts_permissions_mobile_and_timezone(tmp_path
                 await page.evaluate('refresh(true)')
                 await expect(field).to_have_value('26.10.2026')
                 assert calls==[] and current()['visits']==[]
-                await picker.fill('2026-10-27')
-                await picker.dispatch_event('change')
+                await picker.click()
+                await expect(page.locator('#visit-calendar-popup')).to_be_visible()
+                await page.locator('#visit-calendar-popup [data-calendar-date="2026-10-27"]').click()
+                await expect(page.locator('#visit-calendar-popup')).to_be_hidden()
                 await expect(field).to_have_value('27.10.2026')
                 await page.evaluate('refresh(true)')
                 assert calls==[] and current()['visits']==[]
@@ -908,6 +910,102 @@ def test_confirmed_calendar_date_drafts_permissions_mobile_and_timezone(tmp_path
                 await page.reload()
                 await expect(field).to_have_value('27.10.2026')
                 await expect(result_cell.locator('button')).to_have_count(1)
+                assert await page.evaluate('document.documentElement.scrollWidth<=innerWidth')
+                assert errors==[]
+                await context.close();await browser.close()
+        asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('phone',[False,True])
+def test_calendar_icon_opens_real_day_grid_on_desktop_and_touch_phone(tmp_path,monkeypatch,phone):
+    monkeypatch.setenv('DATA_DIR',str(tmp_path));monkeypatch.setenv('APP_USER','owner')
+    monkeypatch.setenv('APP_PASSWORD','long-test-password');monkeypatch.setenv('BROWSER_SCHEDULE_ENABLED','false')
+    monkeypatch.delenv('PUBLIC_URL',raising=False)
+    from app import main
+    importlib.reload(main)
+    with main.database() as conn:
+        main.save_items(conn,[{'id':'9500','url':'https://cian.ru/sale/flat/9500/',
+                              'title':'Квартира','address':'Москва, Тестовая улица, д. 95'}],'2026-10-26T10:00:00+00:00')
+    with TestClient(main.app,base_url='https://xata.test') as client:
+        sign_in(client)
+        assert client.post('/api/users',json={'username':'expert','display_name':'Риелтор','password':'password-123','role':'realtor'}).status_code==201
+        sign_in(client,'expert','password-123')
+        async def scenario():
+            from playwright.async_api import async_playwright,expect
+            writes=[]
+            async def bridge(route):
+                request=route.request;parsed=urlsplit(request.url)
+                assert parsed.hostname=='xata.test'
+                if request.method not in ('GET','HEAD'):writes.append((request.method,parsed.path))
+                headers={k:v for k,v in request.headers.items() if k.lower() in ('content-type','origin','sec-fetch-site','x-csrf-token')}
+                response=client.request(request.method,parsed.path,headers=headers,content=request.post_data_buffer,follow_redirects=False)
+                forwarded={k:v for k,v in response.headers.items() if k.lower() not in ('set-cookie','content-length','content-encoding','transfer-encoding')}
+                await route.fulfill(status=response.status_code,headers=forwarded,body=response.content)
+            async with async_playwright() as playwright:
+                browser=await playwright.chromium.launch(headless=True)
+                context=await browser.new_context(viewport={'width':390 if phone else 1440,'height':844},
+                    locale='en-US',timezone_id='America/Los_Angeles',is_mobile=phone,has_touch=phone)
+                await context.route('**/*',bridge)
+                page=await context.new_page();errors=[]
+                page.on('pageerror',lambda error:errors.append(str(error)))
+                await page.clock.set_fixed_time('2026-10-26T09:00:00Z')
+                await page.goto('https://xata.test/')
+                cell=page.locator('tr[data-listing-id="9500"] td').nth(12)
+                field=cell.locator('.visit-date-input')
+                icon=cell.get_by_role('button',name='Выбрать дату просмотра квартиры 9500',exact=True)
+                popup=page.locator('#visit-calendar-popup')
+                async def press(locator):
+                    if phone:await locator.tap()
+                    else:await locator.click()
+                await expect(popup).to_be_hidden()
+                await expect(icon.locator('svg')).to_be_visible()
+                await field.fill('26.10.2026')
+                await press(icon)
+                await expect(popup).to_be_visible()
+                await expect(icon).to_have_attribute('aria-expanded','true')
+                await expect(popup.locator('.visit-calendar-head strong')).to_contain_text('октябрь')
+                await page.evaluate('refresh(true)')
+                await expect(popup).to_be_visible()
+                await expect(field).to_have_value('26.10.2026')
+                await press(popup.get_by_role('button',name='Следующий месяц',exact=True))
+                await expect(popup.locator('.visit-calendar-head strong')).to_contain_text('ноябрь')
+                await expect(popup.locator('[data-calendar-date="2026-11-01"]')).to_be_visible()
+                bounds=await popup.bounding_box()
+                viewport=page.viewport_size
+                assert bounds['x']>=0 and bounds['x']+bounds['width']<=viewport['width']
+                assert bounds['y']>=0 and bounds['y']+bounds['height']<=viewport['height']
+                target=popup.get_by_role('button',name='01.11.2026',exact=True)
+                if phone:
+                    button_bounds=await target.bounding_box()
+                    assert button_bounds['height']>=44 and button_bounds['width']>=40
+                await press(target)
+                await expect(popup).to_be_hidden()
+                await expect(icon).to_have_attribute('aria-expanded','false')
+                await expect(field).to_have_value('01.11.2026')
+                await field.blur()
+                await page.evaluate('refresh(true)')
+                assert writes==[]
+                assert client.get('/api/state').json()['listings'][0]['visits']==[]
+                await expect(field).to_have_value('01.11.2026')
+                # Reopening retains the chosen draft month/day, and Escape
+                # closes only the calendar without touching the result form.
+                await press(icon)
+                await expect(popup).to_be_visible()
+                await expect(popup.locator('[data-calendar-date="2026-11-01"]')).to_have_attribute('aria-pressed','true')
+                await page.keyboard.press('Escape')
+                await expect(popup).to_be_hidden()
+                await expect(field).to_have_value('01.11.2026')
+                assert not await page.locator('#visit-dialog').is_visible()
+                assert writes==[]
+                await press(cell.get_by_role('button',name='ОК',exact=True))
+                await expect(cell.locator('.visit-date-status')).to_have_text('Дата сохранена.')
+                assert len(writes)==1 and writes[0][1].endswith('/visits/date')
+                item=client.get('/api/state').json()['listings'][0]
+                assert len(item['visits'])==1 and item['review_status']=='new'
+                assert item['visits'][0]['scheduled_at']=='2026-10-31T21:00:00+00:00'
+                await page.reload()
+                await expect(field).to_have_value('01.11.2026')
+                await expect(popup).to_be_hidden()
                 assert await page.evaluate('document.documentElement.scrollWidth<=innerWidth')
                 assert errors==[]
                 await context.close();await browser.close()
