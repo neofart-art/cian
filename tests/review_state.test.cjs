@@ -117,3 +117,16 @@ test('a delayed state cannot resurrect properties after manual merge', () => {
   const stale=state.reconcile(after,[a,b],11,10);
   assert.deepEqual([...stale],[...after]);
 });
+
+test('viewing versions survive delayed polls and nearest appointment ignores completed and cancelled', () => {
+  const visits=[{id:1,status:'completed',scheduled_at:'2026-10-01T10:00:00Z'},
+    {id:2,status:'planned',scheduled_at:'2026-11-02T10:00:00Z'},
+    {id:3,status:'planned',scheduled_at:'2026-11-01T18:30:00+03:00'},
+    {id:4,status:'cancelled',scheduled_at:'2026-10-01T10:00:00Z'}];
+  const previous={id:'1',visits_version:5,visits};
+  const merged=state.merge(previous,{id:'1',visits_version:4,visits:[],price:123});
+  assert.deepEqual(merged.visits,visits);assert.equal(merged.price,123);
+  assert.equal(state.nextVisit(merged).id,3);
+  assert.equal(state.nextVisit({}),null);
+  assert.deepEqual(state.merge(previous,{id:'1',visits_version:6,visits:[]}).visits,[]);
+});

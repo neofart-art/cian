@@ -27,6 +27,7 @@ from app.property_match import (best_match, candidate_rows, create_property, rec
 from app.criteria import browser_criteria
 from app.finance import mortgage_payment
 from app.covers import CoverCache, cover_url
+from app import viewings
 from app import source
 from app.csv_source import CianCsvSource, MAX_BYTES
 from app.browser_source import CianBrowserSource, BrowserAttention
@@ -161,7 +162,7 @@ def property_context(conn):
         if not any(item['candidate_property_id']==target for item in pending.get(source,[])):
             pending.setdefault(source,[]).append(choice)
     return {'rows':rows,'props':props,'groups':groups,'prices':prices,'pending':pending,
-            'revision':identity_revision(conn),'by_id':by_id}
+            'revision':identity_revision(conn),'by_id':by_id,'visits':viewings.context(conn)}
 
 
 def property_listing_data(conn, row, context=None):
@@ -188,6 +189,8 @@ def property_listing_data(conn, row, context=None):
     item['price_max'] = max(entry['price'] for entry in prices) if prices else item['price']
     item['duplicate_candidate'] = next(iter(context['pending'].get(pid,[])),None)
     item['identity_revision'] = context['revision']
+    item['visits'] = context['visits'].get(pid, [])
+    item['visits_version'] = context['props'][pid]['visits_version']
     return item
 
 
@@ -383,7 +386,7 @@ async def protect_origin(request, call_next):
 
 STATIC = Path(__file__).parent / 'static'
 ASSET_VERSIONS = {name: hashlib.sha256((STATIC / name).read_bytes()).hexdigest()[:16]
-                  for name in ('app.js', 'review-state.js', 'login.js', 'style.css', 'xata-logo.svg', 'xata-mark.svg')}
+                  for name in ('app.js', 'visits.js', 'review-state.js', 'login.js', 'style.css', 'xata-logo.svg', 'xata-mark.svg')}
 
 
 def html_document(name):
@@ -481,6 +484,25 @@ def realtor_review(listing_id: str, data: RealtorReview, user=Depends(auth)):
         item = property_listing_data(conn, current_property_row(conn, property_id))
     log.info('Realtor review changed user_id=%s listing_id=%s', user['id'], listing_id)
     return item
+
+
+def save_viewing(listing_id, data, user, visit_id=None):
+    if user['role'] not in ('admin', 'reviewer'):
+        raise HTTPException(403, 'Просмотры изменяют только семья и администратор')
+    with database() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        pid = viewings.save(conn, listing_id, data, user['id'], visit_id)
+        return property_listing_data(conn, current_property_row(conn, pid))
+
+
+@app.post('/api/listings/{listing_id}/visits')
+def create_viewing(listing_id: str, data: viewings.VisitInput, user=Depends(auth)):
+    return save_viewing(listing_id, data, user)
+
+
+@app.patch('/api/listings/{listing_id}/visits/{visit_id}')
+def update_viewing(listing_id: str, visit_id: int, data: viewings.VisitInput, user=Depends(auth)):
+    return save_viewing(listing_id, data, user, visit_id)
 
 
 class DuplicateDecision(BaseModel):
@@ -747,6 +769,18 @@ def export():
                 '\n'.join(f"CIAN {entry['id']} · {entry['first_seen']} — {entry['last_seen']} · {entry['status']}" for entry in item['publication_history']),
             ]
             sheet.append([("'" + value if isinstance(value, str) and value.startswith(('=', '+', '-', '@')) else value) for value in values])
+    visits_sheet = book.create_sheet('Просмотры')
+    visits_sheet.append(['Property ID','Текущий CIAN ID','Адрес','ID просмотра','Дата встречи (UTC)',
+                         'Состояние','Результат','До просмотра','После просмотра','Состоялся (UTC)',
+                         'Изменил','Изменено (UTC)'])
+    for item in items:
+        for visit in item['visits']:
+            values = [item['property_id'],item['id'],item['address'],visit['id'],visit['scheduled_at'],
+                      visit['status'],visit['outcome'],visit['preparation'],visit['comment'],
+                      visit['completed_at'],visit['updated_by_name'] or visit['updated_by_username'],visit['updated_at']]
+            visits_sheet.append([("'" + value if isinstance(value,str) and value.startswith(('=','+','-','@')) else value) for value in values])
+    visits_sheet.freeze_panes = 'A2'
+    visits_sheet.auto_filter.ref = visits_sheet.dimensions
     sheet.freeze_panes = 'A2'
     sheet.auto_filter.ref = sheet.dimensions
     stream = io.BytesIO()

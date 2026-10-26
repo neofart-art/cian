@@ -36,6 +36,9 @@ async function responseJson(response) {
 function jsonOptions(method, data) {
   return {method, headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)};
 }
+const visitUI = XataVisits.create({getItem:key=>records.get(key),getUser:()=>currentUser,
+  saveItem:item=>{acceptListing(item);setText(message,'Просмотр сохранён.');message.className='';},request:async(url,options)=>responseJson(await apiFetch(url,options)),
+  jsonOptions,render:renderListings,refresh:()=>refresh(true)});
 function cell(row) { const td = document.createElement('td'); row.append(td); return td; }
 function safeCianUrl(value) {
   return /^https?:\/\/([a-z0-9-]+\.)*cian\.ru(?::(?:80|443))?\/sale\/flat\/\d+\/?(?:[?#].*)?$/i.test(value || '');
@@ -64,7 +67,7 @@ coverDialog.addEventListener('close',()=>largeCover.removeAttribute('src'));
 function makeRow(id) {
   const row = document.createElement('tr');
   row.dataset.listingId = id;
-  const cells = Array.from({length:12}, () => cell(row));
+  const cells = Array.from({length:13}, () => cell(row));
   const link = document.createElement('a');
   link.target = '_blank'; link.rel = 'noopener noreferrer';
   cells[1].append(link);
@@ -221,13 +224,19 @@ function renderRow(item, forceReview = false) {
     entry.comment.value = item.realtor_comment || '';
   }
   setText(entry.realtorSaving, pendingRealtors.has(id) ? 'Сохраняем…' : '');
-  row.hidden = selectedFilter !== 'all' && selectedFilter !== effectiveStatus;
+  visitUI.renderCell(cells[12],item);
+  row.hidden = selectedFilter !== 'all' && (selectedFilter === 'planned' ? !XataReview.nextVisit(item) : selectedFilter !== effectiveStatus);
   return row;
 }
 function renderListings() {
   const body = document.querySelector('#listings');
   const ordered = XataReview.ordered(records.values(), selectedSort);
   const counts = XataReview.counts(ordered);
+  counts.planned=ordered.filter(item=>XataReview.nextVisit(item)).length;
+  const planned=selectedFilter==='planned';
+  document.querySelector('.table-wrap').hidden=planned;
+  document.querySelector('#visit-agenda').hidden=!planned;
+  if(planned)visitUI.agenda(ordered);
   for (const item of ordered) { const row = renderRow(item); if (!row.parentNode) body.append(row); }
   // Keep focused status controls/details in place during refresh.
   if (!pendingReviews.size && !pendingRealtors.size && !pendingDuplicates.size && !document.activeElement?.matches('.review-select,.realtor-select,.realtor-comment')) {

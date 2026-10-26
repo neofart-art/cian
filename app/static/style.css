@@ -86,3 +86,33 @@ footer{font-size:13px}
 
 /* Keep the area heading, sort arrow and numeric values on one line. */
 #listing-table th:nth-child(6) .sort-button,#listing-table td:nth-child(6){white-space:nowrap;overflow-wrap:normal}
+
+/* Viewing controls stay readable in a phone-sized dialog and agenda. */
+#listing-table{min-width:1280px}
+#listing-table th:nth-child(1){width:9%}
+#listing-table th:nth-child(2){width:5%}
+#listing-table th:nth-child(3){width:15%}
+#listing-table th:nth-child(4),#listing-table th:nth-child(5){width:8%}
+#listing-table th:nth-child(6){width:7%}
+#listing-table th:nth-child(7){width:4%}
+#listing-table th:nth-child(8),#listing-table th:nth-child(9){width:6%}
+#listing-table th:nth-child(10){width:7%}
+#listing-table th:nth-child(11){width:8%}
+#listing-table th:nth-child(12){width:9%}
+#listing-table th:nth-child(13){width:8%}
+.visit-record{padding:7px 0;font-size:13px}.visit-record p{white-space:pre-wrap;overflow-wrap:anywhere}
+.visit-record strong{font-size:13px}.visit-record details summary{font-size:13px;font-weight:400}
+.visit-meta{font-size:11px;color:#627067}.visit-overdue{color:#8b3828}
+.visit-actions{display:flex;gap:6px;flex-wrap:wrap;margin:7px 0}
+.visit-actions button,#listing-table td:last-child>button{font-size:12px;padding:7px;min-height:36px;white-space:normal}
+.visit-history{margin-top:9px}.visit-history>summary{font-size:12px}
+#visit-agenda{display:grid;gap:14px;margin-top:16px;grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr))}
+.visit-card{min-width:0}.visit-card h3{margin:0 0 8px;overflow-wrap:anywhere;font-size:17px}
+.visit-card a{color:#294b3e}.visit-card .visit-actions button{min-height:44px;font-size:15px}
+#visit-dialog{width:min(560px,94vw);max-width:94vw;max-height:94vh;overflow:auto;border:1px solid #cbd4c2;border-radius:12px;padding:20px;background:#fffefa;color:#263d37}
+#visit-dialog::backdrop{background:rgba(25,40,34,.6)}
+#visit-dialog form{display:grid;gap:13px}#visit-dialog label{font-size:15px;color:#263d37;margin:0;min-width:0}
+#visit-dialog textarea{width:100%;min-width:0;font:inherit;font-size:16px;padding:10px;border:1px solid #b8c5b7;border-radius:7px;resize:vertical;background:#fffefa;color:inherit}
+#visit-dialog input,#visit-dialog select{display:block;margin-top:6px;min-height:44px;font-size:16px;max-width:100%}
+#visit-dialog button{min-height:44px}#visit-address{overflow-wrap:anywhere}#visit-error:empty{display:none}
+@media(max-width:480px){#visit-dialog{padding:14px}.visit-card{padding:16px}}

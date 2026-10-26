@@ -87,7 +87,7 @@ def test_shared_review_ui_login_roles_refresh_and_layout(tmp_path, monkeypatch):
                 await expect(page.locator('#identity')).to_contain_text('Риелтор')
                 assert await page.locator('[data-admin]:visible').count() == 0
                 assert await page.locator('#listing-table th').all_text_contents() == [
-                    'Фото','№ ЦИАН','ЖК / адрес','Цена','Ипотека / мес.','Площадь','Этаж','Метро','До метро','Добавлено','Статус','Риелтор']
+                    'Фото','№ ЦИАН','ЖК / адрес','Цена','Ипотека / мес.','Площадь','Этаж','Метро','До метро','Добавлено','Статус','Риелтор','Просмотр']
                 assert await page.locator('.table-wrap').evaluate('el => el.scrollWidth <= el.clientWidth')
                 assert await page.evaluate('document.documentElement.scrollWidth <= innerWidth')
                 await expect(page.locator('#last-sync')).to_contain_text('16.10.2026')
@@ -201,6 +201,39 @@ def test_shared_review_ui_login_roles_refresh_and_layout(tmp_path, monkeypatch):
                 await expect(page.locator('#listings tr')).to_have_count(4)
                 await expect(page.locator('tr[data-listing-id="789"] .review-label')).to_have_text('НОВОЕ')
                 await page.set_viewport_size({'width':390,'height':844})
+                # Schedule and record a shared viewing from a phone. Drafts
+                # survive polls, and the outcome drives the existing family status.
+                visit_row = page.locator('tr[data-listing-id="789"]')
+                await visit_row.locator('td').last.get_by_role('button',name='Назначить / записать итог',exact=True).click()
+                await expect(page.locator('#visit-dialog')).to_be_visible()
+                await page.locator('#visit-date').fill('2026-10-01T18:30')
+                await page.locator('#visit-preparation').fill('Вход со двора')
+                await page.evaluate('refresh()')
+                await expect(page.locator('#visit-preparation')).to_have_value('Вход со двора')
+                assert await page.locator('#visit-dialog').evaluate('el=>el.scrollWidth<=el.clientWidth')
+                await page.locator('#visit-save').click()
+                await expect(page.locator('#visit-dialog')).not_to_be_visible()
+                await page.locator('[data-review-filter="planned"]').click()
+                await expect(page.locator('#visit-agenda .visit-card')).to_have_count(1)
+                await expect(page.locator('#visit-agenda')).to_contain_text('Укажите результат')
+                await page.locator('#visit-agenda').get_by_role('button',name='Итог просмотра',exact=True).click()
+                await page.locator('#visit-outcome').select_option('rejected')
+                await page.locator('#visit-comment').fill('<script>Не понравилось</script> · Шумно')
+                await page.locator('#visit-save').click()
+                await expect(page.locator('#visit-dialog')).not_to_be_visible()
+                await page.locator('[data-review-filter="rejected"]').click()
+                await expect(visit_row).to_be_visible()
+                await expect(visit_row).to_have_class('review-rejected')
+                await expect(visit_row.locator('.review-label')).to_have_text('Не подходит')
+                await expect(visit_row.locator('td').last).to_contain_text('Не понравилось')
+                await page.reload()
+                await expect(visit_row.locator('td').last).to_contain_text('Не понравилось')
+                await visit_row.locator('td').last.get_by_role('button',name='Назначить повторный',exact=True).click()
+                await page.locator('#visit-date').fill('2026-11-01T18:30')
+                await page.locator('#visit-save').click()
+                await expect(page.locator('#visit-dialog')).not_to_be_visible()
+                await expect(visit_row).to_have_class('review-rejected')
+                await expect(visit_row.locator('.visit-history')).to_contain_text('Не понравилось')
                 assert await page.evaluate('document.documentElement.scrollWidth <= innerWidth')
                 assert await page.locator('.table-wrap').evaluate('el => el.scrollWidth > el.clientWidth')
                 assert failures == []

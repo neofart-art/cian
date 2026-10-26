@@ -345,6 +345,9 @@ def merge_properties(conn, source, target, now):
                         VALUES (?,?,?,?,?)''', (source, target, row['id'], now, snapshot))
     conn.execute('UPDATE listings SET property_id=? WHERE property_id=?', (target, source))
     conn.execute('UPDATE price_history SET property_id=? WHERE property_id=?', (target, source))
+    conn.execute('UPDATE property_visits SET property_id=? WHERE property_id=?', (target, source))
+    conn.execute('''UPDATE properties SET visits_version=(SELECT MAX(visits_version)+1 FROM properties WHERE id IN (?,?))
+                    WHERE id=?''', (source, target, target))
     conn.execute('UPDATE properties SET merged_into=?,updated_at=? WHERE id=?', (target, now, source))
     sync_property_reviews(conn, target, merging=True)
     row = conn.execute('SELECT * FROM listings WHERE property_id=? ORDER BY first_seen DESC,rowid DESC LIMIT 1',

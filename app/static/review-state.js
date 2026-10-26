@@ -14,7 +14,7 @@
   }
   function merge(previous, incoming) {
     const result = {...incoming};
-    if (previous) for (const [version,fields] of [['review_version',reviewFields],['realtor_version',realtorFields]]) {
+    if (previous) for (const [version,fields] of [['review_version',reviewFields],['realtor_version',realtorFields],['visits_version',['visits','visits_version']]]) {
       if (Number(previous[version] || 0) > Number(incoming[version] || 0))
         for (const key of fields) result[key] = previous[key];
     }
@@ -57,6 +57,9 @@
   function effectiveStatus(item) {
     return item.realtor_status === 'rejected' ? 'rejected' : (item.review_status || 'new');
   }
+  function nextVisit(item) {
+    return (item.visits || []).filter(v=>v.status==='planned').sort((a,b)=>Date.parse(a.scheduled_at)-Date.parse(b.scheduled_at)||a.id-b.id)[0] || null;
+  }
   function defaultOrder(a,b) {
     return (rank[effectiveStatus(a)] ?? 0) - (rank[effectiveStatus(b)] ?? 0)
       || (value(b,'first_seen') ?? 0) - (value(a,'first_seen') ?? 0)
@@ -86,7 +89,7 @@
     for (const item of items) { result.all++; result[effectiveStatus(item)]++; }
     return result;
   }
-  const api = {key,reconcile,merge,ordered,cycleSort,counts,mortgage,minutes,effectiveStatus};
+  const api = {key,reconcile,merge,ordered,cycleSort,counts,mortgage,minutes,effectiveStatus,nextVisit};
   root.XataReview = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

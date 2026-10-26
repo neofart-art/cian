@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from app.csv_source import parse_card_text, is_publication_time
 from app.property_match import create_property, record_price, root_property, save_decision, bump_identity
+from app.viewings import migrate as migrate_viewings
 
 
 def quote(name):
@@ -143,6 +144,7 @@ def migrate_listings(database):
             merged_at TEXT NOT NULL,review_snapshot TEXT NOT NULL)''')
 
         now = datetime.now(timezone.utc).isoformat()
+        migrate_viewings(conn)
         for row in conn.execute('SELECT * FROM listings WHERE property_id IS NULL ORDER BY COALESCE(first_seen,last_seen),id').fetchall():
             property_id = create_property(conn, dict(row), row['first_seen'] or row['last_seen'] or now)
             conn.execute('UPDATE listings SET property_id=? WHERE id=?', (property_id, row['id']))
