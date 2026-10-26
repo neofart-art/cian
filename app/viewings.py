@@ -14,6 +14,7 @@ REJECTION_REASONS = {
     'building':'Дом / подъезд','location':'Расположение','documents':'Документы','other':'Другое',
 }
 Reason = Literal['noise','layout','condition','building','location','documents','other']
+REQUEST_ID_PATTERN = r'^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$'
 
 
 def migrate(conn):
@@ -60,7 +61,7 @@ class VisitInput(BaseModel):
     comment: str = Field(default='', max_length=2000)
     completed_at: datetime | None = None
     rejection_reasons: list[Reason] | None = Field(default=None,max_length=7)
-    request_id: str | None = Field(default=None,pattern=r'^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$')
+    request_id: str | None = Field(default=None,pattern=REQUEST_ID_PATTERN)
 
     @field_validator('preparation', 'comment')
     @classmethod
@@ -94,6 +95,32 @@ class VisitInput(BaseModel):
         return self
 
 
+def request_fingerprint(data):
+    return hashlib.sha256(json.dumps(data.model_dump(mode='json',exclude={'request_id','version'}),
+                                    sort_keys=True,ensure_ascii=False).encode()).hexdigest()
+
+
+class VisitDateInput(BaseModel):
+    """A date-only operation; never accepts outcomes, notes or review fields."""
+    model_config = ConfigDict(extra='forbid')
+    property_id: int = Field(ge=1)
+    visits_version: int = Field(ge=0)
+    visit_id: int | None = Field(default=None,ge=1)
+    date: datetime | None
+    request_id: str | None = Field(default=None,pattern=REQUEST_ID_PATTERN)
+
+    @field_validator('date')
+    @classmethod
+    def aware_time(cls,value):
+        return VisitInput.aware_time(value)
+
+    @model_validator(mode='after')
+    def creation_key(self):
+        if self.visit_id is None and self.date is not None and not self.request_id:
+            raise ValueError('Для назначения первой даты нужен ключ повторного запроса')
+        return self
+
+
 def context(conn):
     groups = {}
     for row in conn.execute('''SELECT v.*,u.display_name AS updated_by_name,u.username AS updated_by_username
@@ -117,8 +144,7 @@ def save(conn, listing_id, data, user_id, visit_id=None):
     pid = target['property_id']
     if pid != data.property_id:
         raise HTTPException(409, 'Объекты были объединены. Обновите страницу и повторите действие')
-    fingerprint = hashlib.sha256(json.dumps(data.model_dump(mode='json',exclude={'request_id','version'}),
-                                            sort_keys=True,ensure_ascii=False).encode()).hexdigest()
+    fingerprint = request_fingerprint(data)
     if visit_id is not None and data.request_id is not None:
         raise HTTPException(422,'Ключ повторного запроса используется только при создании')
     if visit_id is None and data.request_id:
@@ -167,4 +193,56 @@ def save(conn, listing_id, data, user_id, visit_id=None):
             version = conn.execute('SELECT MAX(review_version)+1 FROM listings WHERE property_id=?', (pid,)).fetchone()[0]
             conn.execute('''UPDATE listings SET review_status=?,review_updated_at=?,review_updated_by=?,review_version=?
                             WHERE property_id=?''', (status, now, user_id, version, pid))
+    return pid
+
+def save_date(conn, listing_id, data, user_id):
+    """Caller owns BEGIN IMMEDIATE and enforces admin/realtor authorization."""
+    target = conn.execute('SELECT property_id FROM listings WHERE id=?',(listing_id,)).fetchone()
+    if target is None:
+        raise HTTPException(404,'Объявление не найдено')
+    pid = target['property_id']
+    if pid != data.property_id:
+        raise HTTPException(409,'Объект изменился. Обновите страницу перед редактированием даты')
+    planned = None
+    if data.visit_id is None and data.date is not None:
+        planned = VisitInput(property_id=pid,status='planned',scheduled_at=data.date,request_id=data.request_id)
+        replay = conn.execute('SELECT property_id,request_hash FROM property_visits WHERE request_id=?',(data.request_id,)).fetchone()
+        if replay:
+            if replay['property_id'] != pid or replay['request_hash'] != request_fingerprint(planned):
+                raise HTTPException(409,'Этот запрос уже сохранён с другой датой. Обновите страницу')
+            return pid
+    # An identical retry acknowledges the old operation without another write,
+    # even if its date no longer wins the nearest-appointment selection.
+    previous = conn.execute('SELECT * FROM property_visits WHERE id=? AND property_id=?',
+                            (data.visit_id,pid)).fetchone() if data.visit_id else None
+    value = data.date.isoformat() if data.date else None
+    if previous:
+        field = 'completed_at' if previous['status']=='completed' else 'scheduled_at'
+        if ((value is not None and previous['status'] in ('planned','completed') and previous[field]==value)
+                or (value is None and previous['status']=='cancelled')):
+            return pid
+    revision = conn.execute('SELECT visits_version FROM properties WHERE id=?',(pid,)).fetchone()[0]
+    if revision != data.visits_version:
+        raise HTTPException(409,'Дата или просмотр уже изменены. Обновите страницу и повторите действие')
+    shown = conn.execute("""SELECT * FROM property_visits WHERE property_id=? AND status='planned'
+                            ORDER BY scheduled_at,id LIMIT 1""",(pid,)).fetchone()
+    if shown is None:
+        shown = conn.execute("""SELECT * FROM property_visits WHERE property_id=? AND status='completed'
+                                ORDER BY completed_at DESC,id DESC LIMIT 1""",(pid,)).fetchone()
+    if (shown['id'] if shown else None) != data.visit_id:
+        raise HTTPException(409,'В колонке уже другой просмотр. Обновите страницу перед изменением даты')
+    if shown is None:
+        return save(conn,listing_id,planned,user_id) if planned else pid
+    if value is None and shown['status']=='completed':
+        raise HTTPException(422,'Нельзя удалить дату состоявшегося просмотра')
+    now = datetime.now(timezone.utc).isoformat()
+    if value is None:
+        # Preserve the previous scheduled date in the cancelled history entry.
+        conn.execute("""UPDATE property_visits SET status='cancelled',updated_at=?,updated_by=?,version=version+1
+                        WHERE id=?""",(now,user_id,shown['id']))
+    else:
+        field = 'scheduled_at' if shown['status']=='planned' else 'completed_at'
+        conn.execute('UPDATE property_visits SET '+field+'=?,updated_at=?,updated_by=?,version=version+1 WHERE id=?',
+                     (value,now,user_id,shown['id']))
+    conn.execute('UPDATE properties SET visits_version=visits_version+1 WHERE id=?',(pid,))
     return pid

@@ -500,6 +500,16 @@ def create_viewing(listing_id: str, data: viewings.VisitInput, user=Depends(auth
     return save_viewing(listing_id, data, user)
 
 
+@app.patch('/api/listings/{listing_id}/visits/date')
+def update_viewing_date(listing_id: str, data: viewings.VisitDateInput, user=Depends(auth)):
+    if user['role'] not in ('admin','realtor'):
+        raise HTTPException(403,'Дату просмотра меняют только риелтор и администратор')
+    with database() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        pid = viewings.save_date(conn,listing_id,data,user['id'])
+        return property_listing_data(conn,current_property_row(conn,pid))
+
+
 @app.patch('/api/listings/{listing_id}/visits/{visit_id}')
 def update_viewing(listing_id: str, visit_id: int, data: viewings.VisitInput, user=Depends(auth)):
     return save_viewing(listing_id, data, user, visit_id)

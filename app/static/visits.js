@@ -7,12 +7,15 @@ globalThis.XataVisits = {create({getItem,getUser,saveItem,request,jsonOptions,re
   const zone='Europe/Moscow';
   const format=value=>value && Number.isFinite(Date.parse(value)) ? new Date(value).toLocaleString('ru-RU',{timeZone:zone,day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}) : '—';
   const canEdit=()=>['admin','reviewer'].includes(getUser()?.role);
+  const canEditDate=()=>['admin','realtor'].includes(getUser()?.role);
+  const dateEditors=new WeakMap();
   function el(tag,text,cls) {const n=document.createElement(tag);if(text!=null)n.textContent=text;if(cls)n.className=cls;return n;}
   function button(text,action) {const b=el('button',text,'secondary compact');b.type='button';b.addEventListener('click',action);return b;}
   const dialog=document.querySelector('#visit-dialog'),form=document.querySelector('#visit-form');
   const date=document.querySelector('#visit-date'),state=document.querySelector('#visit-state'),outcome=document.querySelector('#visit-outcome');
   const preparation=document.querySelector('#visit-preparation'),comment=document.querySelector('#visit-comment');
   const error=document.querySelector('#visit-error'),submit=document.querySelector('#visit-save');
+  const recordChoice=document.querySelector('#visit-record-choice');
   const reasonFields=document.querySelector('#visit-reasons'),outcomeFields=document.querySelector('#visit-outcome-group');
   for(const [value,label] of Object.entries(reasons)) {
     const choice=el('label'),input=el('input');input.type='checkbox';input.value=value;input.name='rejection_reasons';
@@ -54,8 +57,20 @@ globalThis.XataVisits = {create({getItem,getUser,saveItem,request,jsonOptions,re
     for(const option of state.options)option.disabled=visit?.status==='completed'&&option.value!=='completed';
     outcome.value=visit?.outcome||'';preparation.value=visit?.preparation||'';comment.value=visit?.comment||'';
     for(const input of reasonFields.querySelectorAll('input'))input.checked=(visit?.rejection_reasons||[]).includes(input.value);
-    error.textContent='';stateFields();dialog.showModal();
+    recordChoice.replaceChildren();
+    for(const entry of item.visits||[]) {
+      const option=el('option',format(entry.status==='completed'?entry.completed_at:entry.scheduled_at)+' · '+(outcomes[entry.outcome]||states[entry.status]));
+      option.value=String(entry.id);recordChoice.append(option);
+    }
+    const fresh=el('option','Новый просмотр');fresh.value='new';recordChoice.append(fresh);
+    recordChoice.value=visit?String(visit.id):'new';
+    error.textContent='';stateFields();if(!dialog.open)dialog.showModal();
   }
+  recordChoice.addEventListener('change',()=>{
+    if(!editing||saving)return;
+    const item=getItem(editing.key),entry=(item?.visits||[]).find(v=>String(v.id)===recordChoice.value)||null;
+    open(editing.key,entry,'completed');
+  });
   document.querySelector('#visit-close').addEventListener('click',()=>{if(!saving)dialog.close();});
   dialog.addEventListener('cancel',event=>{if(saving)event.preventDefault();});
   form.addEventListener('submit',async event=>{
@@ -103,33 +118,83 @@ globalThis.XataVisits = {create({getItem,getUser,saveItem,request,jsonOptions,re
     const labels=(visit.rejection_reasons||[]).map(value=>reasons[value]).filter(Boolean);
     if(labels.length)box.append(el('p','Причины отказа: '+labels.join(', '),'visit-rejection-reasons'));
     box.append(el('small',(visit.updated_by_name||visit.updated_by_username||'—')+' · '+format(visit.updated_at),'visit-meta'));
-    if(canEdit())box.append(actions(item,visit));
+    if(agenda&&canEdit())box.append(actions(item,visit));
     return box;
   }
+  function renderDate(cell,item) {
+    const shown=XataReview.displayVisit(item),raw=shown?(shown.status==='planned'?shown.scheduled_at:shown.completed_at):null;
+    const editable=canEditDate();
+    let editor=dateEditors.get(cell);
+    if(!editor||editor.editable!==editable) {
+      cell.replaceChildren();
+      editor={editable,dirty:false,saving:false,failed:false};
+      if(editable) {
+        const input=el('input');input.type='datetime-local';input.className='visit-date-input';
+        input.min='2000-01-01T00:00';input.max='2100-12-31T23:59';input.step='60';
+        const status=el('small',null,'visit-date-status');status.setAttribute('role','status');status.setAttribute('aria-live','polite');
+        editor.input=input;editor.status=status;cell.append(input,status);
+        input.addEventListener('input',()=>{editor.dirty=true;});
+        const persist=async()=>{
+          if(editor.saving||!editor.dirty||!editor.baseline)return;
+          if(!input.checkValidity()) {status.textContent='Укажите корректные дату и время (Москва).';return;}
+          if(input.value===editor.original&&!editor.failed) {editor.dirty=false;return;}
+          const expected=editor.baseline;
+          if(!editor.request)editor.request={property_id:expected.propertyId,visits_version:expected.revision,
+            visit_id:expected.visitId,request_id:expected.requestId};
+          const data={...editor.request,date:input.value?input.value+':00+03:00':null};
+          editor.saving=true;input.disabled=true;status.textContent='Сохраняем дату…';
+          let saved=false;
+          try {
+            const result=await request('/api/listings/'+encodeURIComponent(expected.listingId)+'/visits/date',jsonOptions('PATCH',data));
+            saveItem(result);editor.dirty=false;editor.failed=false;editor.request=null;saved=true;
+            status.textContent='Дата сохранена.';
+          } catch(e) {editor.failed=true;status.textContent=e.message;}
+          finally {editor.saving=false;input.disabled=false;render();}
+          if(saved)await refresh();
+        };
+        input.addEventListener('change',persist);
+        input.addEventListener('blur',persist);
+      } else {
+        editor.time=el('time');cell.append(editor.time);
+      }
+      editor.caption=el('small');editor.overdue=el('small','Укажите результат просмотра','visit-overdue');
+      cell.append(editor.caption,editor.overdue);dateEditors.set(cell,editor);
+    }
+    if(editor.editable) {
+      editor.input.setAttribute('aria-label','Дата просмотра квартиры '+item.id+' (Москва)');
+      // Keep the exact target and revision captured before the user typed;
+      // a background refresh must neither erase a draft nor retarget it.
+      if(!editor.saving&&!editor.dirty&&!editor.failed&&document.activeElement!==editor.input) {
+        editor.input.value=localDate(raw);editor.original=editor.input.value;
+        editor.baseline={listingId:item.id,propertyId:item.property_id,revision:item.visits_version||0,
+          visitId:shown?.id||null,requestId:shown?null:crypto.randomUUID()};
+        editor.request=null;
+      }
+    } else {
+      editor.time.textContent=format(raw);
+      if(raw)editor.time.dateTime=raw;else editor.time.removeAttribute('datetime');
+    }
+    editor.caption.textContent=shown?states[shown.status]:'—';
+    editor.overdue.hidden=!XataReview.overdue(shown);
+  }
   function renderCells(dateCell,resultCell,item) {
+    renderDate(dateCell,item);
     const signature=JSON.stringify([item.visits_version,item.visits,getUser()?.role,
       (item.visits||[]).map(v=>XataReview.overdue(v))]);
     if(resultCell.dataset.visitsSignature===signature)return;
     resultCell.dataset.visitsSignature=signature;
     const historyOpen=resultCell.querySelector('.visit-history')?.open;
-    dateCell.replaceChildren();resultCell.replaceChildren();
-    const shown=XataReview.displayVisit(item),latest=XataReview.latestCompleted(item),nearest=XataReview.nextVisit(item);
-    if(shown) {
-      const time=el('time',format(shown.status==='planned'?shown.scheduled_at:shown.completed_at));
-      time.dateTime=shown.status==='planned'?shown.scheduled_at:shown.completed_at;
-      dateCell.append(time,el('small',states[shown.status]));
-      if(XataReview.overdue(shown))dateCell.append(el('small','Укажите результат просмотра','visit-overdue'));
-    } else dateCell.append(el('span','—'));
+    resultCell.replaceChildren();
+    const latest=XataReview.latestCompleted(item);
     if(latest)resultCell.append(record(item,latest));else resultCell.append(el('span','—'));
-    if(canEdit()) {
-      if(nearest)resultCell.append(actions(item,nearest));
-      else resultCell.append(button('Записать результат',()=>open(XataReview.key(item),null,'completed')));
-      resultCell.append(button((item.visits||[]).length?'Назначить повторный':'Назначить / записать итог',()=>open(XataReview.key(item))));
-    }
+    if(canEdit())resultCell.append(button('Добавить результат',()=>{
+      const current=getItem(XataReview.key(item));
+      if(current)open(XataReview.key(current),XataReview.displayVisit(current),'completed');
+    }));
     const history=item.visits||[];
     if(history.length) {
       const details=el('details',null,'visit-history');details.open=!!historyOpen;
-      details.append(el('summary','История просмотров ('+(item.visits||[]).length+')'));
+      details.append(el('summary','История просмотров ('+history.length+')'));
       for(const v of history)details.append(record(item,v));
       resultCell.append(details);
     }

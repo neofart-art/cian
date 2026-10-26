@@ -209,7 +209,8 @@ def test_shared_review_ui_login_roles_refresh_and_layout(tmp_path, monkeypatch):
                 # Schedule and record a shared viewing from a phone. Drafts
                 # survive polls, and the outcome drives the existing family status.
                 visit_row = page.locator('tr[data-listing-id="789"]')
-                await visit_row.locator('td').last.get_by_role('button',name='Назначить / записать итог',exact=True).click()
+                await visit_row.locator('td').last.get_by_role('button',name='Добавить результат',exact=True).click()
+                await page.locator('#visit-state').select_option('planned')
                 await expect(page.locator('#visit-dialog')).to_be_visible()
                 await page.locator('#visit-date').fill('2026-10-01T18:30')
                 await page.locator('#visit-preparation').fill('Вход со двора')
@@ -235,7 +236,9 @@ def test_shared_review_ui_login_roles_refresh_and_layout(tmp_path, monkeypatch):
                 await expect(visit_row).to_be_hidden()
                 await page.locator('#rejected-section > summary').click()
                 await expect(visit_row.locator('td').last).to_contain_text('Не понравилось')
-                await visit_row.locator('td').last.get_by_role('button',name='Назначить повторный',exact=True).click()
+                await visit_row.locator('td').last.get_by_role('button',name='Добавить результат',exact=True).click()
+                await page.locator('#visit-record-choice').select_option('new')
+                await page.locator('#visit-state').select_option('planned')
                 await page.locator('#visit-date').fill('2026-11-01T18:30')
                 await page.locator('#visit-save').click()
                 await expect(page.locator('#visit-dialog')).not_to_be_visible()
@@ -624,7 +627,7 @@ def test_viewing_dates_rejections_agenda_conflicts_and_comparison_on_phone(tmp_p
                 await page.locator('[data-review-filter="all"]').click()
                 original_stamp=state()['9101']['visits'][0]['completed_at']
                 positive_row=page.locator('tr[data-listing-id="9101"]')
-                await positive_row.locator('td').last.get_by_role('button',name='Изменить',exact=True).first.click()
+                await positive_row.locator('td').last.get_by_role('button',name='Добавить результат',exact=True).click()
                 await page.locator('#visit-comment').fill('Понравилась тишина. Уточнение после поездки.')
                 await page.locator('#visit-save').click()
                 await expect(page.locator('#visit-dialog')).to_be_hidden()
@@ -670,6 +673,152 @@ def test_viewing_dates_rejections_agenda_conflicts_and_comparison_on_phone(tmp_p
                 assert persisted['preparation']=='До поездки: спросить про документы'
                 assert persisted['comment']=='<b>После поездки</b>: шумно'
                 assert await page.evaluate('document.documentElement.scrollWidth<=innerWidth')
+                assert errors==[]
+                await context.close();await browser.close()
+        asyncio.run(scenario())
+
+
+def test_inline_date_permissions_mobile_reload_conflicts_and_single_result_button(tmp_path,monkeypatch):
+    from uuid import uuid4
+    monkeypatch.setenv('DATA_DIR',str(tmp_path));monkeypatch.setenv('APP_USER','owner')
+    monkeypatch.setenv('APP_PASSWORD','long-test-password');monkeypatch.setenv('BROWSER_SCHEDULE_ENABLED','false')
+    monkeypatch.delenv('PUBLIC_URL',raising=False)
+    from app import main
+    importlib.reload(main)
+    monkeypatch.setattr(main.CianBrowserSource,'status',lambda self:{'status':'authorized','message':'Авторизован','manual_access':False})
+    with main.database() as conn:
+        main.save_items(conn,[{'id':str(key),'url':'https://cian.ru/sale/flat/'+str(key)+'/',
+            'title':'Квартира','address':'Москва, Тестовая улица, д. '+str(key),'price':12000000}
+            for key in (9300,9301)],'2026-10-26T10:00:00+00:00')
+    with TestClient(main.app,base_url='https://xata.test') as client:
+        sign_in(client)
+        for username,role in [('expert','realtor'),('buyer','reviewer')]:
+            assert client.post('/api/users',json={'username':username,'display_name':username,'password':'password-123','role':role}).status_code==201
+        sign_in(client,'expert','password-123')
+        def current(key='9300'):
+            return next(i for i in client.get('/api/state').json()['listings'] if i['id']==key)
+        async def scenario():
+            from playwright.async_api import async_playwright,expect
+            calls=[]
+            async def bridge(route):
+                request=route.request;parsed=urlsplit(request.url)
+                assert parsed.hostname=='xata.test'
+                path=parsed.path+('?' + parsed.query if parsed.query else '')
+                if request.method not in ('GET','HEAD'):calls.append((request.method,path))
+                headers={k:v for k,v in request.headers.items() if k.lower() in ('content-type','origin','sec-fetch-site','x-csrf-token')}
+                response=client.request(request.method,path,headers=headers,content=request.post_data_buffer,follow_redirects=False)
+                forwarded={k:v for k,v in response.headers.items() if k.lower() not in ('set-cookie','content-length','content-encoding','transfer-encoding')}
+                await route.fulfill(status=response.status_code,headers=forwarded,body=response.content)
+            async with async_playwright() as playwright:
+                browser=await playwright.chromium.launch(headless=True)
+                context=await browser.new_context(viewport={'width':390,'height':844})
+                await context.route('**/*',bridge)
+                page=await context.new_page();errors=[]
+                page.on('pageerror',lambda error:errors.append(str(error)))
+                await page.goto('https://xata.test/')
+                row=page.locator('tr[data-listing-id="9300"]')
+                date_cell=row.locator('td').nth(12);result_cell=row.locator('td').nth(13)
+                field=date_cell.locator('.visit-date-input')
+                await expect(field).to_be_visible()
+                await expect(result_cell.locator('button')).to_have_count(0)
+                await expect(date_cell.locator('button')).to_have_count(0)
+                before=current()
+                # Two change events from a phone picker must still be one job.
+                await field.focus()
+                await field.evaluate("input=>{input.value='2026-11-01T18:30';input.dispatchEvent(new Event('input',{bubbles:true}));input.dispatchEvent(new Event('change',{bubbles:true}));input.dispatchEvent(new Event('change',{bubbles:true}));}")
+                await expect(date_cell.locator('.visit-date-status')).to_have_text('Дата сохранена.')
+                assert len(calls)==1 and calls[0][1].endswith('/visits/date')
+                assert not await page.locator('#visit-dialog').is_visible()
+                saved=current();visit=saved['visits'][0]
+                assert len(saved['visits'])==1 and visit['scheduled_at']=='2026-11-01T15:30:00+00:00'
+                assert saved['review_status']==before['review_status']=='new'
+                await page.reload()
+                await expect(field).to_have_value('2026-11-01T18:30')
+                # Polling preserves the draft and its original revision.
+                await field.focus()
+                await field.evaluate("input=>{input.value='2026-11-03T19:00';input.dispatchEvent(new Event('input',{bubbles:true}));}")
+                state=current()
+                external=client.patch('/api/listings/9300/visits/date',json={
+                    'property_id':state['property_id'],'visits_version':state['visits_version'],
+                    'visit_id':visit['id'],'date':'2026-11-02T20:00:00+03:00'})
+                assert external.status_code==200
+                await page.evaluate('refresh(true)')
+                await expect(field).to_have_value('2026-11-03T19:00')
+                await field.dispatch_event('change')
+                await expect(date_cell.locator('.visit-date-status')).to_contain_text('уже изменены')
+                assert current()['visits'][0]['scheduled_at']=='2026-11-02T17:00:00+00:00'
+                assert len(current()['visits'])==1
+                await page.reload()
+                await expect(field).to_have_value('2026-11-02T20:00')
+                await field.fill('2026-11-03T18:45')
+                await field.dispatch_event('change')
+                await expect(date_cell.locator('.visit-date-status')).to_have_text('Дата сохранена.')
+                assert current()['visits'][0]['id']==visit['id']
+                assert current()['review_status']=='new'
+                assert (await field.bounding_box())['height']>=44
+                assert (await field.bounding_box())['width']>=210
+                assert await page.evaluate('document.documentElement.scrollWidth<=innerWidth')
+                # Buyers see a value, never the inline editing control.
+                sign_in(client,'buyer','password-123')
+                await page.reload()
+                await expect(date_cell.locator('input')).to_have_count(0)
+                await expect(date_cell).to_contain_text('03.11.2026')
+                await expect(result_cell.locator('button')).to_have_count(1)
+                await expect(result_cell.locator('button')).to_have_text('Добавить результат')
+                state=current()
+                assert client.patch('/api/listings/9300/visits/date',json={
+                    'property_id':state['property_id'],'visits_version':state['visits_version'],
+                    'visit_id':visit['id'],'date':'2026-11-04T18:00:00+03:00'}).status_code==403
+                await result_cell.get_by_role('button',name='Добавить результат',exact=True).click()
+                await expect(page.locator('#visit-record-choice')).to_have_value(str(visit['id']))
+                await page.locator('[data-visit-outcome="rejected"]').click()
+                await page.locator('#visit-date').fill('2026-11-03T20:15')
+                await page.locator('#visit-preparation').fill('Спросить про документы')
+                await page.locator('#visit-comment').fill('Шумно после просмотра')
+                await page.locator('#visit-reasons input[value="noise"]').check()
+                await page.locator('#visit-save').click()
+                await expect(page.locator('#visit-dialog')).to_be_hidden()
+                assert len(current()['visits'])==1
+                assert current()['visits'][0]['id']==visit['id']
+                await page.locator('#rejected-section > summary').click()
+                await expect(result_cell.locator('button')).to_have_count(1)
+                await result_cell.get_by_role('button',name='Добавить результат',exact=True).click()
+                await expect(page.locator('#visit-comment')).to_have_value('Шумно после просмотра')
+                await expect(page.locator('#visit-reasons input[value="noise"]')).to_be_checked()
+                await page.locator('[data-visit-outcome="liked"]').click()
+                await page.locator('#visit-save').click()
+                await expect(page.locator('#visit-dialog')).to_be_hidden()
+                assert len(current()['visits'])==1
+                assert current()['review_status']=='liked'
+                assert current()['visits'][0]['comment']=='Шумно после просмотра'
+                # Admin may also edit the displayed actual date, without
+                # changing the outcome or either note.
+                sign_in(client)
+                await page.reload()
+                await expect(field).to_have_value('2026-11-03T20:15')
+                before=current()
+                await field.fill('2026-11-04T19:30')
+                await field.dispatch_event('change')
+                await expect(date_cell.locator('.visit-date-status')).to_have_text('Дата сохранена.')
+                after=current()
+                assert len(after['visits'])==1 and after['visits'][0]['id']==visit['id']
+                assert after['review_status']==before['review_status']=='liked'
+                for key in ('outcome','preparation','comment','rejection_reasons'):
+                    assert after['visits'][0][key]==before['visits'][0][key]
+                second=page.locator('tr[data-listing-id="9301"]')
+                await second.locator('.visit-date-input').fill('2026-11-02T18:00')
+                await second.locator('.visit-date-input').dispatch_event('change')
+                await expect(second.locator('.visit-date-status')).to_have_text('Дата сохранена.')
+                header=page.locator('#listing-table [data-sort="visit_date"]')
+                await header.click()
+                assert await page.locator('#listings tr').evaluate_all('rows=>rows.map(r=>r.dataset.listingId)')==['9301','9300']
+                await header.click()
+                assert await page.locator('#listings tr').evaluate_all('rows=>rows.map(r=>r.dataset.listingId)')==['9300','9301']
+                await page.reload()
+                await expect(field).to_have_value('2026-11-04T19:30')
+                await expect(result_cell.locator('button')).to_have_count(1)
+                assert await page.evaluate('document.documentElement.scrollWidth<=innerWidth')
+                assert await page.locator('.table-wrap').evaluate('el=>el.scrollWidth>el.clientWidth')
                 assert errors==[]
                 await context.close();await browser.close()
         asyncio.run(scenario())

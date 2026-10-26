@@ -257,7 +257,7 @@ function renderListings() {
     const row=renderRow(item),target=XataReview.effectiveStatus(item)==='rejected'?rejectedBody:body;
     if(row.parentNode!==target)target.append(row);
   }
-  if(!pendingReviews.size&&!pendingRealtors.size&&!pendingDuplicates.size&&!document.activeElement?.matches('.review-select,.realtor-select,.realtor-comment')) {
+  if(!pendingReviews.size&&!pendingRealtors.size&&!pendingDuplicates.size&&!document.activeElement?.matches('.review-select,.realtor-select,.realtor-comment,.visit-date-input')) {
     for(const [target,items] of [[body,active],[rejectedBody,rejected]]) {
       let cursor=target.firstElementChild;
       for(const item of items) {

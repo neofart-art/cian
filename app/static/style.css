@@ -166,3 +166,23 @@ footer{font-size:13px}
 .compare-placeholder{display:flex;align-items:center;justify-content:center}
 #compare-dialog button{min-height:44px}
 @media(max-width:480px){#compare-dialog{padding:12px}#compare-table th,#compare-table td{min-width:200px;width:200px}#compare-table th:first-child{min-width:130px;width:130px}}
+
+/* Inline date editing needs a full datetime control; scroll stays in the table. */
+.visit-date-input{display:block;width:100%;min-width:0;max-width:100%;min-height:44px;padding:7px;font-size:16px}
+.visit-date-status{font-size:12px;white-space:normal}
+.visit-date-status:empty{display:none}
+:is(#listing-table,#rejected-table):has(.visit-date-input){min-width:1600px}
+:is(#listing-table,#rejected-table):has(.visit-date-input) th:nth-child(1){width:8%}
+:is(#listing-table,#rejected-table):has(.visit-date-input) th:nth-child(2){width:4.5%}
+:is(#listing-table,#rejected-table):has(.visit-date-input) th:nth-child(3){width:12%}
+:is(#listing-table,#rejected-table):has(.visit-date-input) th:nth-child(4){width:6.5%}
+:is(#listing-table,#rejected-table):has(.visit-date-input) th:nth-child(5){width:7%}
+:is(#listing-table,#rejected-table):has(.visit-date-input) th:nth-child(6){width:5.5%}
+:is(#listing-table,#rejected-table):has(.visit-date-input) th:nth-child(7){width:3%}
+:is(#listing-table,#rejected-table):has(.visit-date-input) th:nth-child(8){width:4.5%}
+:is(#listing-table,#rejected-table):has(.visit-date-input) th:nth-child(9){width:4.5%}
+:is(#listing-table,#rejected-table):has(.visit-date-input) th:nth-child(10){width:5.5%}
+:is(#listing-table,#rejected-table):has(.visit-date-input) th:nth-child(11){width:7%}
+:is(#listing-table,#rejected-table):has(.visit-date-input) th:nth-child(12){width:9%}
+:is(#listing-table,#rejected-table):has(.visit-date-input) th:nth-child(13){width:16%}
+:is(#listing-table,#rejected-table):has(.visit-date-input) th:nth-child(14){width:7%}
