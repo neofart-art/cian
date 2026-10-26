@@ -124,20 +124,20 @@ footer{font-size:13px}
 :is(#listing-table,#rejected-table){min-width:1280px}
 :is(#listing-table,#rejected-table) th:nth-child(1){width:9%}
 :is(#listing-table,#rejected-table) th:nth-child(2){width:5%}
-:is(#listing-table,#rejected-table) th:nth-child(3){width:15%}
+:is(#listing-table,#rejected-table) th:nth-child(3){width:13.5%}
 :is(#listing-table,#rejected-table) th:nth-child(4){width:7%}
 :is(#listing-table,#rejected-table) th:nth-child(5){width:7.5%}
-:is(#listing-table,#rejected-table) th:nth-child(6){width:4%}
+:is(#listing-table,#rejected-table) th:nth-child(6){width:6.5%}
 :is(#listing-table,#rejected-table) th:nth-child(7){width:3.5%}
 :is(#listing-table,#rejected-table) th:nth-child(8){width:5%}
 :is(#listing-table,#rejected-table) th:nth-child(9){width:5%}
 :is(#listing-table,#rejected-table) th:nth-child(10){width:6%}
 :is(#listing-table,#rejected-table) th:nth-child(11){width:8%}
 :is(#listing-table,#rejected-table) th:nth-child(12){width:10%}
-:is(#listing-table,#rejected-table) th:nth-child(13){width:8%}
-:is(#listing-table,#rejected-table) th:nth-child(14){width:7%}
+:is(#listing-table,#rejected-table) th:nth-child(13){width:7.5%}
+:is(#listing-table,#rejected-table) th:nth-child(14){width:6.5%}
 :is(#listing-table,#rejected-table) td:nth-child(4),:is(#listing-table,#rejected-table) td:nth-child(5){white-space:normal;font-size:13px}
-:is(#listing-table,#rejected-table) th:nth-child(6) .sort-button,:is(#listing-table,#rejected-table) td:nth-child(6){white-space:normal}
+:is(#listing-table,#rejected-table) th:nth-child(6) .sort-button,:is(#listing-table,#rejected-table) td:nth-child(6){white-space:nowrap}
 .visit-record,.visit-record strong{font-size:12px}
 .visit-actions button,:is(#listing-table,#rejected-table) td:last-child>button{min-height:44px}
 .visit-rejected,.return-hint{color:#8b3828}

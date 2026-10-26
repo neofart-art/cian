@@ -98,10 +98,13 @@ def context(conn):
     groups = {}
     for row in conn.execute('''SELECT v.*,u.display_name AS updated_by_name,u.username AS updated_by_username
                                FROM property_visits v JOIN users u ON u.id=v.updated_by ORDER BY v.id DESC'''):
-        item = dict(row)
+        # Preserve unknown columns in SQLite without publishing them or
+        # requiring them to be JSON-serializable (legacy BLOBs, for example).
+        fields = ('id','property_id','scheduled_at','status','outcome','preparation','comment',
+                  'completed_at','created_at','updated_at','updated_by','version',
+                  'updated_by_name','updated_by_username','rejection_reasons')
+        item = {field:row[field] for field in fields}
         item['rejection_reasons'] = json.loads(item['rejection_reasons'] or '[]')
-        item.pop('request_id',None)
-        item.pop('request_hash',None)
         groups.setdefault(row['property_id'], []).append(item)
     return groups
 

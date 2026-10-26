@@ -43,12 +43,13 @@ globalThis.XataVisits = {create({getItem,getUser,saveItem,request,jsonOptions,re
   });
   function open(key,visit=null,mode=null) {
     const item=getItem(key);if(!item||!canEdit()||saving)return;
+    const actualTime=visit?.completed_at||new Date().toISOString();
     editing={key,listingId:item.id,propertyId:item.property_id,id:visit?.id,version:visit?.version||0,
-      scheduledAt:visit?.scheduled_at||null,requestId:visit?null:crypto.randomUUID()};
+      scheduledAt:visit?.scheduled_at||null,completedAt:actualTime,requestId:visit?null:crypto.randomUUID()};
     document.querySelector('#visit-title').textContent=visit?'Просмотр квартиры':'Новый просмотр';
     document.querySelector('#visit-address').textContent=item.address||item.title||'Квартира';
     state.value=mode||visit?.status||'planned';shownState=state.value;
-    draftDates={planned:localDate(visit?.scheduled_at),completed:localDate(visit?.completed_at||new Date().toISOString())};
+    draftDates={planned:localDate(visit?.scheduled_at),completed:localDate(actualTime)};
     date.value=draftDates[shownState==='completed'?'completed':'planned'];
     for(const option of state.options)option.disabled=visit?.status==='completed'&&option.value!=='completed';
     outcome.value=visit?.outcome||'';preparation.value=visit?.preparation||'';comment.value=visit?.comment||'';
@@ -63,8 +64,9 @@ globalThis.XataVisits = {create({getItem,getUser,saveItem,request,jsonOptions,re
     if(!current||current.property_id!==editing.propertyId) {error.textContent='Объект изменился. Закройте окно и откройте его заново.';return;}
     const done=state.value==='completed';
     if(done&&!outcome.value) {error.textContent='Выберите результат просмотра.';return;}
-    const actual=done&&date.value?date.value+':00+03:00':null;
-    const scheduled=done?editing.scheduledAt:(date.value?date.value+':00+03:00':null);
+    const entered=date.value?date.value+':00+03:00':null;
+    const actual=done?(date.value===localDate(editing.completedAt)?editing.completedAt:entered):null;
+    const scheduled=done?editing.scheduledAt:(date.value===localDate(editing.scheduledAt)?editing.scheduledAt:entered);
     const data={property_id:editing.propertyId,version:editing.version,status:state.value,
       scheduled_at:scheduled,completed_at:actual,outcome:done?outcome.value:null,
       preparation:preparation.value,comment:comment.value,

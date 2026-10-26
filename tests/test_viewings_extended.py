@@ -20,7 +20,7 @@ def test_legacy_viewings_migrate_without_rebuild_or_loss(multi_app):
         for field in ('rejection_reasons','request_id','request_hash'):
             conn.execute('ALTER TABLE property_visits DROP COLUMN '+field)
         conn.execute('ALTER TABLE property_visits ADD COLUMN vendor_note TEXT')
-        conn.execute("UPDATE property_visits SET vendor_note='Сохраняется'")
+        conn.execute("UPDATE property_visits SET vendor_note=?",(bytes([0,255]),))
         conn.execute('CREATE INDEX vendor_visits_idx ON property_visits(vendor_note)')
         conn.execute("CREATE TRIGGER vendor_visits_trigger AFTER UPDATE OF vendor_note ON property_visits BEGIN SELECT 1; END")
         visits=[dict(row) for row in conn.execute('SELECT * FROM property_visits')]
@@ -40,6 +40,7 @@ def test_legacy_viewings_migrate_without_rebuild_or_loss(multi_app):
         assert conn.execute('PRAGMA foreign_key_check').fetchone() is None
     assert admin.get('/api/auth/me').status_code==200
     assert current(admin)['visits'][0]['outcome']=='thinking'
+    assert 'vendor_note' not in current(admin)['visits'][0]
 
 
 def test_both_notes_reasons_actual_date_reload_and_export(multi_app):

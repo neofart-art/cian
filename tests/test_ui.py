@@ -511,7 +511,7 @@ def test_viewing_dates_rejections_agenda_conflicts_and_comparison_on_phone(tmp_p
             return response.json()['visits'][0]
         past=visit('9100')
         visit('9100',scheduled_at='2050-11-01T18:30:00+03:00')
-        visit('9101',status='completed',outcome='liked',completed_at='2026-09-01T18:30:00+03:00',comment='Понравилась тишина')
+        visit('9101',status='completed',outcome='liked',completed_at='2026-09-01T18:30:43.123456+03:00',comment='Понравилась тишина')
         cancelled=visit('9102',scheduled_at='2030-11-01T18:30:00+03:00')
         async def scenario():
             from playwright.async_api import async_playwright,expect
@@ -622,6 +622,14 @@ def test_viewing_dates_rejections_agenda_conflicts_and_comparison_on_phone(tmp_p
                 await page.locator('[data-review-filter="new"]').click()
                 assert not await page.locator('#rejected-section').evaluate('el=>el.open')
                 await page.locator('[data-review-filter="all"]').click()
+                original_stamp=state()['9101']['visits'][0]['completed_at']
+                positive_row=page.locator('tr[data-listing-id="9101"]')
+                await positive_row.locator('td').last.get_by_role('button',name='Изменить',exact=True).first.click()
+                await page.locator('#visit-comment').fill('Понравилась тишина. Уточнение после поездки.')
+                await page.locator('#visit-save').click()
+                await expect(page.locator('#visit-dialog')).to_be_hidden()
+                assert state()['9101']['visits'][0]['completed_at']==original_stamp
+                assert state()['9101']['review_status']=='liked'
                 before=state()
                 write_count=len(writes)
                 for key in ('9100','9101','9103','9104'):
