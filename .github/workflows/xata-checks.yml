@@ -37,6 +37,7 @@ jobs:
           node --check app/static/review-state.js
           node --test tests/review_state.test.cjs
       - name: Install test Chromium
+        timeout-minutes: 5
         run: python -m playwright install --with-deps chromium
       - name: Offline DOM and persistent-profile tests
         run: RUN_BROWSER_TESTS=1 python -m pytest -q tests/test_browser_dom.py tests/test_ui.py
