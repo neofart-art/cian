@@ -243,7 +243,8 @@ def save(conn, listing_id, data, user_id, visit_id=None):
     # dates and edits of older outcomes never reset document preparation.
     outcome_changed = data.status=='completed' and (old is None or old['outcome']!=data.outcome)
     if (outcome_changed and latest['id']==visit_id and latest['outcome']=='liked'
-            and (previous_latest is None or previous_latest['outcome']!='liked')):
+            and ((old is not None and old['outcome']=='rejected')
+                 or previous_latest is None or previous_latest['outcome']!='liked')):
         conn.execute('UPDATE properties SET viewing_documents_ready=0 WHERE id=?',(pid,))
     conn.execute('UPDATE properties SET visits_version=visits_version+1 WHERE id=?', (pid,))
     # Saving a note, scheduling, rescheduling or cancelling must not undo a

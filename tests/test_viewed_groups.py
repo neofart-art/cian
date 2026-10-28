@@ -201,3 +201,14 @@ def test_merge_import_and_republication_preserve_latest_property_classification(
     column=next(c.column for c in sheet[1] if c.value=='Группа после просмотра')
     assert any(sheet.cell(row,column).value=='Понравилось — готовимся к проверке документов' for row in range(2,sheet.max_row+1))
     assert book['Просмотры'].max_row==3
+
+
+def test_correcting_negative_with_new_actual_date_starts_without_documents(multi_app):
+    main,admin=multi_app
+    item=create(admin,status='completed',outcome='rejected',completed_at='2026-10-20T10:00:00Z')
+    old=item['visits'][0]
+    item=create(admin,status='completed',outcome='liked',completed_at='2026-10-22T10:00:00Z')
+    item=stage(admin,item).json()
+    item=edit(admin,item,old,**{'outcome':'liked','completed_at':'2026-10-23T10:00:00Z'})
+    assert item['viewed_group']=='liked' and not item['viewing_documents_ready']
+    assert len(item['visits'])==2

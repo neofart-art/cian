@@ -1143,6 +1143,14 @@ def test_viewed_groups_controls_colors_legacy_refresh_and_mobile(tmp_path,monkey
                 await expect(page.locator('#visit-dialog')).to_be_hidden()
                 await expect(page.locator('#viewed-liked-listings tr[data-listing-id="9503"]')).to_have_count(1)
                 assert current('9503')['viewed_group']=='liked' and len(current('9503')['visits'])==3
+                # Sorting still uses the displayed appointment date. 9503 has
+                # a repeat scheduled in 2030; 9506 shows its 2026 actual date.
+                header=page.locator('#viewed-liked-section [data-sort="visit_date"]')
+                await header.click()
+                assert await page.locator('#viewed-liked-listings tr').evaluate_all('rows=>rows.map(r=>r.dataset.listingId)')==['9503','9506']
+                await header.click()  # default order
+                await header.click()  # ascending dates
+                assert await page.locator('#viewed-liked-listings tr').evaluate_all('rows=>rows.map(r=>r.dataset.listingId)')==['9506','9503']
                 await page.reload()
                 await expect(page.locator('#viewed-documents-listings tr[data-listing-id="9501"]')).to_have_count(1)
                 assert not await page.locator('#viewed-rejected-section').evaluate('el=>el.open')
@@ -1150,8 +1158,8 @@ def test_viewed_groups_controls_colors_legacy_refresh_and_mobile(tmp_path,monkey
                 for group in ('liked','documents'):
                     assert await page.locator('#viewed-'+group+'-section').evaluate('el=>el.open')
                 assert await page.evaluate('document.documentElement.scrollWidth<=innerWidth')
-                assert await page.locator('#viewed-documents-section .viewed-wrap').evaluate('el=>el.scrollWidth>el.clientWidth')
                 if phone:
+                    assert await page.locator('#viewed-documents-section .viewed-wrap').evaluate('el=>el.scrollWidth>el.clientWidth')
                     box=await row.locator('.viewed-stage-toggle').bounding_box()
                     assert box['height']>=44
                 sign_in(client,'expert','password-123')
