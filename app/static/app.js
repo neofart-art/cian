@@ -3,7 +3,7 @@ const form = document.querySelector('#filters');
 const button = document.querySelector('#collect');
 const status = document.querySelector('#status');
 const message = document.querySelector('#page-message');
-const records = new Map(), rows = new Map(), pendingReviews = new Set(), pendingRealtors = new Set(), pendingDuplicates = new Set();
+const records = new Map(), rows = new Map(), pendingReviews = new Set(), pendingRealtors = new Set(), pendingDuplicates = new Set(), pendingClassifications = new Set();
 const labels = {new:'НОВОЕ', liked:'Понравилось', viewed:'Просмотрено', rejected:'Не подходит'};
 const realtorLabels = {pending:'Не оценено',approved:'Одобрено',rejected:'Отбраковано'};
 let selectedSort = null, identityRevision = 0, refreshPromise = null;
@@ -86,7 +86,10 @@ function makeRow(id) {
   historyDetails.append(historySummary,historyText);
   const duplicateCompare = document.createElement('a'); duplicateCompare.target='_blank'; duplicateCompare.rel='noopener noreferrer';
   duplicateCompare.textContent='Сравнить на ЦИАН'; duplicateBox.insertBefore(duplicateCompare,duplicateActions);
-  cells[2].append(title,address,propertyHistory,historyDetails,duplicateBox);
+  const groupLabel=document.createElement('span');groupLabel.className='viewed-group-label';
+  const stageButton=document.createElement('button');stageButton.type='button';stageButton.className='secondary viewed-stage-toggle';
+  stageButton.addEventListener('click',()=>changeClassification(id));
+  cells[2].append(groupLabel,stageButton,title,address,propertyHistory,historyDetails,duplicateBox);
   const coverButton = document.createElement('button'); coverButton.type='button'; coverButton.className='cover-button';
   const coverImage = document.createElement('img'); coverImage.className='listing-cover'; coverImage.loading='lazy';
   coverImage.decoding='async'; coverImage.width=110; coverImage.height=80;
@@ -126,7 +129,7 @@ function makeRow(id) {
   const realtorSaving = document.createElement('small'); realtorSaving.setAttribute('aria-live','polite');
   realtorForm.append(realtorSelect,comment,saveRealtor,realtorSaving); editor.append(editorSummary,realtorForm);
   cells[11].append(realtorBadge,commentPreview,commentDetails,realtorMeta,editor);
-  const entry = {row,cells,compareInput,compareLabel,returnHint,link,title,address,propertyHistory,coverButton,coverImage,coverPlaceholder,failedCover:null,failedCoverAt:0,historyDetails,historyText,duplicateCompare,duplicateBox,duplicateText,duplicateActions,
+  const entry = {row,cells,groupLabel,stageButton,compareInput,compareLabel,returnHint,link,title,address,propertyHistory,coverButton,coverImage,coverPlaceholder,failedCover:null,failedCoverAt:0,historyDetails,historyText,duplicateCompare,duplicateBox,duplicateText,duplicateActions,
     duplicateSame,duplicateDifferent,date,clock,badge,select,meta,saving,
     realtorBadge,commentPreview,commentDetails,commentText,realtorMeta,editor,realtorSelect,comment,saveRealtor,realtorSaving,dirty:false};
   coverImage.addEventListener('error',()=>{
@@ -200,7 +203,15 @@ function renderRow(item, forceReview = false) {
   setText(clock, first ? first.toLocaleTimeString('ru-RU', {hour:'2-digit', minute:'2-digit'}) : '');
   const review = item.review_status || 'new';
   const effectiveStatus = XataReview.effectiveStatus(item);
-  row.className = 'review-' + effectiveStatus;
+  const group=XataReview.viewedGroup(item),legacy=XataReview.latestCompleted(item)?.outcome==='thinking';
+  row.className = 'review-' + effectiveStatus + (group?' viewed-'+group:'');
+  row.dataset.viewedGroup=group||'';
+  const groupLabels={liked:'Понравилось — пока без проверки документов',documents:'Понравилось — готовимся к проверке документов',rejected:'Не понравилось'};
+  entry.groupLabel.hidden=!group&&!legacy;
+  setText(entry.groupLabel,group?groupLabels[group]:(legacy?'Думаем — группа не выбрана':''));
+  entry.stageButton.hidden=!['liked','documents'].includes(group)||!['admin','reviewer'].includes(currentUser?.role);
+  entry.stageButton.disabled=pendingClassifications.has(id);
+  setText(entry.stageButton,group==='documents'?'Пока без проверки документов':'Готовимся к проверке документов');
   row.dataset.reviewStatus = review;
   setText(badge, labels[review]);
   if (forceReview || (!pendingReviews.has(id) && document.activeElement !== select)) select.value = review;
@@ -213,7 +224,7 @@ function renderRow(item, forceReview = false) {
   setText(meta, changed ? (author || '') + ' · ' + changed.toLocaleString('ru-RU', {day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit'}) : '');
   meta.title = changed ? changed.toLocaleString('ru-RU') : '';
   const realtor = item.realtor_status || 'pending';
-  setText(entry.realtorBadge, realtorLabels[realtor]);
+  setText(entry.realtorBadge, group&&realtor==='rejected'?'Отбраковано риелтором':realtorLabels[realtor]);
   entry.realtorBadge.className = 'realtor-label realtor-' + realtor;
   setText(entry.commentPreview, item.realtor_comment ? item.realtor_comment.slice(0,60) + (item.realtor_comment.length > 60 ? '…' : '') : '');
   entry.commentDetails.hidden = !item.realtor_comment;
@@ -231,19 +242,21 @@ function renderRow(item, forceReview = false) {
   }
   setText(entry.realtorSaving, pendingRealtors.has(id) ? 'Сохраняем…' : '');
   visitUI.renderCells(cells[12],cells[13],item);
-  entry.compareLabel.hidden=effectiveStatus==='rejected';
+  entry.compareLabel.hidden=!XataReview.comparisonEligible(item);
   entry.compareInput.checked=comparisonUI.has(id);
   entry.compareInput.setAttribute('aria-label','В сравнение: квартира '+item.id);
-  entry.returnHint.hidden=item.realtor_status!=='rejected';
+  entry.returnHint.hidden=!!group||item.realtor_status!=='rejected';
   setText(entry.returnHint,'Возврат блокирует отказ риелтора. Его оценку меняет риелтор или администратор.');
-  row.hidden = effectiveStatus !== 'rejected' && selectedFilter !== 'all' && (selectedFilter === 'planned' || selectedFilter !== effectiveStatus);
+  row.hidden = XataReview.section(item)==='main' && selectedFilter !== 'all' && (selectedFilter === 'planned' || selectedFilter !== effectiveStatus);
   return row;
 }
 function renderListings() {
   const body=document.querySelector('#listings'),rejectedBody=document.querySelector('#rejected-listings');
   const ordered=XataReview.ordered(records.values(),selectedSort);
-  const active=ordered.filter(item=>XataReview.effectiveStatus(item)!=='rejected');
-  const rejected=ordered.filter(item=>XataReview.effectiveStatus(item)==='rejected');
+  const active=ordered.filter(item=>XataReview.section(item)==='main');
+  const rejected=ordered.filter(item=>XataReview.section(item)==='refused');
+  const destinations=new Map([['main',body],['refused',rejectedBody],
+    ...['liked','documents','rejected'].map(group=>[group,document.querySelector('#viewed-'+group+'-listings')])]);
   const counts=XataReview.counts(active);
   counts.planned=XataReview.agenda(ordered).length;
   const planned=selectedFilter==='planned';
@@ -251,14 +264,15 @@ function renderListings() {
   document.querySelector('#visit-agenda').hidden=!planned;
   if(planned)visitUI.agenda(ordered);
   comparisonUI.sync();
-  // Move existing nodes between the two bodies; never duplicate an apartment
+  // Move existing property nodes between mutually exclusive bodies; never duplicate an apartment
   // or rebuild a realtor draft when its effective status changes.
   for(const item of ordered) {
-    const row=renderRow(item),target=XataReview.effectiveStatus(item)==='rejected'?rejectedBody:body;
+    const row=renderRow(item),target=destinations.get(XataReview.section(item));
     if(row.parentNode!==target)target.append(row);
   }
-  if(!pendingReviews.size&&!pendingRealtors.size&&!pendingDuplicates.size&&!document.activeElement?.matches('.review-select,.realtor-select,.realtor-comment,.visit-date-input,.visit-date-picker,.visit-date-clear,.visit-date-ok')) {
-    for(const [target,items] of [[body,active],[rejectedBody,rejected]]) {
+  if(!pendingReviews.size&&!pendingRealtors.size&&!pendingDuplicates.size&&!pendingClassifications.size&&!document.activeElement?.matches('.review-select,.realtor-select,.realtor-comment,.visit-date-input,.visit-date-picker,.visit-date-clear,.visit-date-ok')) {
+    for(const [section,target] of destinations) {
+      const items=ordered.filter(item=>XataReview.section(item)===section);
       let cursor=target.firstElementChild;
       for(const item of items) {
         const row=rows.get(XataReview.key(item)).row;
@@ -273,6 +287,11 @@ function renderListings() {
   }
   setText(document.querySelector('#count'),active.length);
   setText(document.querySelector('#rejected-count'),rejected.length);
+  for(const group of ['liked','documents','rejected'])setText(document.querySelector('#viewed-'+group+'-count'),ordered.filter(item=>XataReview.viewedGroup(item)===group).length);
+  setText(document.querySelector('#viewed-count'),ordered.filter(item=>XataReview.viewedGroup(item)).length);
+  const legacy=ordered.filter(item=>XataReview.latestCompleted(item)?.outcome==='thinking');
+  const warning=document.querySelector('#viewed-legacy-warning');warning.hidden=!legacy.length;
+  setText(warning,'Сохранён результат «Думаем» у '+legacy.length+' квартир. Новая группа не назначена; эти квартиры оставлены в прежнем разделе. Для классификации явно исправьте результат в существующей форме.');
   const empty=document.querySelector('#empty');
   empty.hidden=(selectedFilter==='all'?counts.all:counts[selectedFilter])>0;
   setText(empty,active.length?'Нет объявлений с выбранным статусом.':'В основном списке пока нет объявлений.');
@@ -283,6 +302,19 @@ function acceptListing(item) {
   identityRevision = Math.max(identityRevision,Number(item.identity_revision || 0));
   const key = XataReview.key(item);
   records.set(key,XataReview.merge(records.get(key),item));
+}
+async function changeClassification(id) {
+  if(pendingClassifications.has(id)||!records.has(id))return;
+  const item=records.get(id);
+  pendingClassifications.add(id);renderRow(item);
+  try {
+    const saved=await responseJson(await apiFetch('/api/listings/'+encodeURIComponent(item.id)+'/viewing-classification',
+      jsonOptions('PATCH',{property_id:item.property_id,visits_version:item.visits_version,documents_ready:!item.viewing_documents_ready})));
+    acceptListing(saved);setText(message,'Группа просмотренной квартиры сохранена.');message.className='';
+  } catch(error) {
+    setText(message,error.message);message.className='error';
+    await refresh(true);
+  } finally {pendingClassifications.delete(id);renderListings();}
 }
 async function changeReview(id, nextStatus) {
   if (pendingReviews.has(id) || !records.has(id)) return;

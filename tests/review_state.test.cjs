@@ -195,3 +195,37 @@ test('viewing date sort uses the shown Moscow day, with missing days last',()=>{
   assert.deepEqual(state.ordered([a,b,c,{id:'4'}],{key:'visit_date',direction:'asc'}).map(i=>i.id),['3','1','2','4']);
   assert.deepEqual(state.ordered([a,b,c,{id:'4'}],{key:'visit_date',direction:'desc'}).map(i=>i.id),['1','2','3','4']);
 });
+
+test('post-visit sections are exclusive, based on latest actual result rather than ad opinions',()=>{
+  const visit=(id,outcome,day)=>({id,status:'completed',outcome,completed_at:day+'T10:00:00Z'});
+  for(const review_status of ['new','liked','rejected'])for(const realtor_status of ['pending','rejected']){
+    const item={id:'1',review_status,realtor_status};
+    assert.equal(state.viewedGroup(item),null);
+    assert.equal(state.section(item),state.effectiveStatus(item)==='rejected'?'refused':'main');
+    const liked={...item,visits:[visit(2,'liked','2026-10-23'),visit(5,'rejected','2026-10-20')]};
+    assert.equal(state.section(liked),'liked');
+    assert.equal(state.section({...liked,viewing_documents_ready:true}),'documents');
+    assert.equal(state.section({...liked,visits:[...liked.visits,visit(6,'rejected','2026-10-24')]}),'rejected');
+  }
+  const thinking={review_status:'viewed',visits:[visit(3,'thinking','2026-10-24')]};
+  assert.equal(state.viewedGroup(thinking),null);assert.equal(state.section(thinking),'main');
+  const tied={visits:[visit(7,'liked','2026-10-24'),visit(8,'rejected','2026-10-24')]};
+  assert.equal(state.section(tied),'rejected');
+});
+test('document classification and viewing revision survive stale polls and Cian republication',()=>{
+  const previous={id:'1',property_id:3,visits_version:7,viewing_documents_ready:true,viewed_group:'documents',
+    visits:[{id:1,status:'completed',outcome:'liked',completed_at:'2026-10-24T10:00:00Z'}]};
+  const result=state.merge(previous,{id:'2',property_id:3,price:100,visits_version:6,viewing_documents_ready:false,visits:[]});
+  assert.equal(state.section(result),'documents');assert.equal(result.viewed_group,'documents');
+  assert.equal(result.id,'2');assert.equal(result.price,100);
+  const next=state.merge(result,{...result,visits_version:8,viewing_documents_ready:false});
+  assert.equal(state.section(next),'liked');
+});
+test('comparison remains read-only and rejects negative completed results even after manual family reset',()=>{
+  const item={review_status:'liked',realtor_status:'pending',visits:[{id:1,status:'completed',outcome:'rejected',completed_at:'2026-10-24T10:00:00Z'}]};
+  assert.equal(state.comparisonEligible(item),false);
+  const liked={...item,visits:[{...item.visits[0],outcome:'liked'}]};
+  assert.equal(state.comparisonEligible(liked),true);
+  assert.equal(state.comparisonEligible({...liked,realtor_status:'rejected'}),false);
+  assert.equal(item.review_status,'liked');
+});

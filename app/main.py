@@ -191,6 +191,8 @@ def property_listing_data(conn, row, context=None):
     item['identity_revision'] = context['revision']
     item['visits'] = context['visits'].get(pid, [])
     item['visits_version'] = context['props'][pid]['visits_version']
+    item['viewing_documents_ready'] = bool(context['props'][pid]['viewing_documents_ready'])
+    item['viewed_group'] = viewings.classification(item['visits'],item['viewing_documents_ready'])
     return item
 
 
@@ -500,6 +502,16 @@ def create_viewing(listing_id: str, data: viewings.VisitInput, user=Depends(auth
     return save_viewing(listing_id, data, user)
 
 
+@app.patch('/api/listings/{listing_id}/viewing-classification')
+def update_viewing_classification(listing_id: str, data: viewings.ClassificationInput, user=Depends(auth)):
+    if user['role'] not in ('admin','reviewer'):
+        raise HTTPException(403,'Группу просмотренной квартиры меняют только покупатели и администратор')
+    with database() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        pid = viewings.save_classification(conn,listing_id,data)
+        return property_listing_data(conn,current_property_row(conn,pid))
+
+
 @app.patch('/api/listings/{listing_id}/visits/date')
 def update_viewing_date(listing_id: str, data: viewings.VisitDateInput, user=Depends(auth)):
     if user['role'] not in ('admin','realtor'):
@@ -762,7 +774,7 @@ def export():
     book = Workbook()
     sheet = book.active
     sheet.title = 'Объявления'
-    sheet.append(['ID', 'Название', 'Цена, ₽', 'Адрес', 'Ссылка', 'Впервые найдено (UTC)', 'Последнее обновление (UTC)', 'ЖК', 'Площадь, м²', 'Этаж', 'Метро', 'Время до метро', 'Источник', 'Последний импорт (UTC)', 'Текст карточки', 'Описание', 'Пешком до метро, мин', 'Статус', 'Статус изменил', 'Дата изменения статуса (UTC)', 'Оценка риелтора', 'Комментарий риелтора', 'Риелторскую оценку изменил', 'Дата риелторской оценки (UTC)', 'Ипотека / мес. (6 млн / 18% / 15 лет)', 'Property ID', 'Все CIAN ID', 'Перепубликаций', 'Мин. замеченная цена, ₽', 'Макс. замеченная цена, ₽', 'Возможный дубль, %', 'История цен (UTC)', 'Публикации: даты и состояние'])
+    sheet.append(['ID', 'Название', 'Цена, ₽', 'Адрес', 'Ссылка', 'Впервые найдено (UTC)', 'Последнее обновление (UTC)', 'ЖК', 'Площадь, м²', 'Этаж', 'Метро', 'Время до метро', 'Источник', 'Последний импорт (UTC)', 'Текст карточки', 'Описание', 'Пешком до метро, мин', 'Статус', 'Статус изменил', 'Дата изменения статуса (UTC)', 'Оценка риелтора', 'Комментарий риелтора', 'Риелторскую оценку изменил', 'Дата риелторской оценки (UTC)', 'Ипотека / мес. (6 млн / 18% / 15 лет)', 'Property ID', 'Все CIAN ID', 'Перепубликаций', 'Мин. замеченная цена, ₽', 'Макс. замеченная цена, ₽', 'Возможный дубль, %', 'История цен (UTC)', 'Публикации: даты и состояние', 'Группа после просмотра'])
     with database() as conn:
         items = sorted(grouped_listing_data(conn), key=lambda item: (item['price'] is None, item['price'] or 0))
         for item in items:
@@ -778,6 +790,10 @@ def export():
                 '\n'.join(f"{entry['observed_at']} · CIAN {entry['listing_id']} · {entry['price']} ₽" for entry in item['price_history']),
                 '\n'.join(f"CIAN {entry['id']} · {entry['first_seen']} — {entry['last_seen']} · {entry['status']}" for entry in item['publication_history']),
             ]
+            values.append({'liked':'Понравилось — пока без проверки документов',
+                           'documents':'Понравилось — готовимся к проверке документов',
+                           'rejected':'Не понравилось'}.get(item['viewed_group'],
+                              'Думаем — группа не выбрана' if any(v['status']=='completed' and v['outcome']=='thinking' for v in item['visits']) else ''))
             sheet.append([("'" + value if isinstance(value, str) and value.startswith(('=', '+', '-', '@')) else value) for value in values])
     visits_sheet = book.create_sheet('Просмотры')
     visits_sheet.append(['Property ID','Текущий CIAN ID','Адрес','ID просмотра','Дата встречи (UTC)',

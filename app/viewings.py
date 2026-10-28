@@ -22,6 +22,8 @@ def migrate(conn):
     columns = {row['name'] for row in conn.execute('PRAGMA table_info(properties)')}
     if 'visits_version' not in columns:
         conn.execute('ALTER TABLE properties ADD COLUMN visits_version INTEGER NOT NULL DEFAULT 0')
+    if 'viewing_documents_ready' not in columns:
+        conn.execute('ALTER TABLE properties ADD COLUMN viewing_documents_ready INTEGER NOT NULL DEFAULT 0 CHECK(viewing_documents_ready IN (0,1))')
     conn.execute('''CREATE TABLE IF NOT EXISTS property_visits(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         property_id INTEGER NOT NULL REFERENCES properties(id),
@@ -148,6 +150,46 @@ def context(conn):
     return groups
 
 
+def latest_completed(conn, property_id):
+    return conn.execute("""SELECT * FROM property_visits WHERE property_id=? AND status='completed'
+                           ORDER BY completed_at DESC,id DESC LIMIT 1""", (property_id,)).fetchone()
+
+
+def classification(visits, documents_ready=False):
+    latest = max((v for v in visits if v['status']=='completed'),
+                 key=lambda v:(datetime.fromisoformat(v['completed_at']),v['id']), default=None)
+    if latest is None or latest['outcome']=='thinking':
+        return None
+    return ('documents' if documents_ready else 'liked') if latest['outcome']=='liked' else 'rejected'
+
+
+class ClassificationInput(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    property_id: int = Field(ge=1)
+    visits_version: int = Field(ge=0)
+    documents_ready: bool = Field(strict=True)
+
+
+def save_classification(conn, listing_id, data):
+    """Caller owns BEGIN IMMEDIATE and enforces family/admin authorization."""
+    target = conn.execute('SELECT property_id FROM listings WHERE id=?',(listing_id,)).fetchone()
+    if target is None:
+        raise HTTPException(404,'Объявление не найдено')
+    pid = target['property_id']
+    if pid != data.property_id:
+        raise HTTPException(409,'Объекты изменились. Обновите страницу')
+    prop = conn.execute('SELECT visits_version,viewing_documents_ready FROM properties WHERE id=?',(pid,)).fetchone()
+    if prop['visits_version'] != data.visits_version:
+        raise HTTPException(409,'Просмотр или группа уже изменены. Обновите страницу и повторите действие')
+    latest = latest_completed(conn,pid)
+    if latest is None or latest['outcome'] != 'liked':
+        raise HTTPException(409,'Подготовка документов доступна только после результата «Понравилось»')
+    if bool(prop['viewing_documents_ready']) != data.documents_ready:
+        conn.execute('UPDATE properties SET viewing_documents_ready=?,visits_version=visits_version+1 WHERE id=?',
+                     (int(data.documents_ready),pid))
+    return pid
+
+
 def save(conn, listing_id, data, user_id, visit_id=None):
     """Caller holds BEGIN IMMEDIATE: visit and family status commit together."""
     target = conn.execute('SELECT property_id FROM listings WHERE id=?', (listing_id,)).fetchone()
@@ -177,6 +219,7 @@ def save(conn, listing_id, data, user_id, visit_id=None):
             raise HTTPException(422, 'Состоявшийся просмотр нельзя отменить или перенести. Назначьте повторный')
     elif data.version:
         raise HTTPException(409, 'Новый просмотр должен иметь версию 0')
+    previous_latest = latest_completed(conn,pid)
     now = datetime.now(timezone.utc).isoformat()
     completed = ((data.completed_at.isoformat() if data.completed_at else
                   old['completed_at'] if old and old['completed_at'] else now)
@@ -195,11 +238,17 @@ def save(conn, listing_id, data, user_id, visit_id=None):
         visit_id = conn.execute('''INSERT INTO property_visits(scheduled_at,status,outcome,preparation,comment,
                                   completed_at,updated_at,updated_by,property_id,created_at,rejection_reasons,request_id,request_hash)
                                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''', (*values, pid, now, encoded_reasons, data.request_id, fingerprint)).lastrowid
+    latest = latest_completed(conn,pid)
+    # A changed latest outcome starts a fresh positive classification. Notes,
+    # dates and edits of older outcomes never reset document preparation.
+    outcome_changed = data.status=='completed' and (old is None or old['outcome']!=data.outcome)
+    if (outcome_changed and latest['id']==visit_id and latest['outcome']=='liked'
+            and (previous_latest is None or previous_latest['outcome']!='liked')):
+        conn.execute('UPDATE properties SET viewing_documents_ready=0 WHERE id=?',(pid,))
     conn.execute('UPDATE properties SET visits_version=visits_version+1 WHERE id=?', (pid,))
     # Saving a note, scheduling, rescheduling or cancelling must not undo a
     # later independent family decision. Nor may an older viewing override a newer one.
     if data.status == 'completed' and (old is None or old['outcome'] != data.outcome):
-        latest = conn.execute("SELECT id FROM property_visits WHERE property_id=? AND status='completed' ORDER BY completed_at DESC,id DESC LIMIT 1", (pid,)).fetchone()
         if latest['id'] == visit_id:
             status = {'liked':'liked','rejected':'rejected','thinking':'viewed'}[data.outcome]
             version = conn.execute('SELECT MAX(review_version)+1 FROM listings WHERE property_id=?', (pid,)).fetchone()[0]

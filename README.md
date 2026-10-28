@@ -293,3 +293,6 @@ RUN_BROWSER_TESTS=1 .venv/bin/python -m pytest -q tests/test_browser_dom.py test
 ~~~
 
 .github/workflows/xata-checks.yml выполняет старые и новые API-тесты (миграция, сессии, роли, CSRF, сохранение review), Node-проверку устаревших ответов, browser UI на искусственных страницах и тесты, обе проверки compose, JS, сборку Dockerfile и локальный smoke healthcheck browser без ЦИАН. Тестовые страницы перехватываются Playwright; настоящие учётные данные не нужны. Эти проверки не подтверждают реальный сбор, авторизацию или ресурсы OMV.
+
+
+Просмотренные квартиры: три группы после поездки, подготовка документов, миграция и безопасное обновление описаны в [docs/XATA_VIEWED_GROUPS.md](docs/XATA_VIEWED_GROUPS.md). Прежний результат «Думаем» автоматически не классифицируется.

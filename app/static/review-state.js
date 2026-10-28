@@ -14,7 +14,7 @@
   }
   function merge(previous, incoming) {
     const result = {...incoming};
-    if (previous) for (const [version,fields] of [['review_version',reviewFields],['realtor_version',realtorFields],['visits_version',['visits','visits_version']]]) {
+    if (previous) for (const [version,fields] of [['review_version',reviewFields],['realtor_version',realtorFields],['visits_version',['visits','visits_version','viewing_documents_ready','viewed_group']]]) {
       if (Number(previous[version] || 0) > Number(incoming[version] || 0))
         for (const key of fields) result[key] = previous[key];
     }
@@ -65,6 +65,13 @@
     return (item.visits || []).filter(v=>v.status==='completed')
       .sort((a,b)=>(Date.parse(b.completed_at)||0)-(Date.parse(a.completed_at)||0)||b.id-a.id)[0] || null;
   }
+  function viewedGroup(item) {
+    const visit=latestCompleted(item);
+    if(!visit||visit.outcome==='thinking')return null;
+    return visit.outcome==='liked'?(item.viewing_documents_ready?'documents':'liked'):'rejected';
+  }
+  function section(item) { return viewedGroup(item)|| (effectiveStatus(item)==='rejected'?'refused':'main'); }
+  function comparisonEligible(item) { return effectiveStatus(item)!=='rejected'&&viewedGroup(item)!=='rejected'; }
   function displayVisit(item) { return nextVisit(item) || latestCompleted(item); }
   const calendar=new Intl.DateTimeFormat('en-CA',{timeZone:'Europe/Moscow',year:'numeric',month:'2-digit',day:'2-digit'});
   function moscowDay(value) {
@@ -130,7 +137,7 @@
     for (const item of items) { result.all++; result[effectiveStatus(item)]++; }
     return result;
   }
-  const api = {key,reconcile,merge,ordered,cycleSort,counts,mortgage,minutes,effectiveStatus,nextVisit,latestCompleted,displayVisit,visitDate,overdue,agenda,pricePerMeter,moscowDay,displayDay,parseDay};
+  const api = {key,reconcile,merge,ordered,cycleSort,counts,mortgage,minutes,effectiveStatus,nextVisit,latestCompleted,displayVisit,visitDate,overdue,agenda,pricePerMeter,moscowDay,displayDay,parseDay,viewedGroup,section,comparisonEligible};
   root.XataReview = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

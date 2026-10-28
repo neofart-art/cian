@@ -343,6 +343,12 @@ def merge_properties(conn, source, target, now):
         snapshot = json.dumps({name: row[name] for name in REVIEW_FIELDS}, ensure_ascii=False)
         conn.execute('''INSERT INTO property_merge_audit(source_property_id,target_property_id,listing_id,merged_at,review_snapshot)
                         VALUES (?,?,?,?,?)''', (source, target, row['id'], now, snapshot))
+    viewing_owner = conn.execute("""SELECT property_id FROM property_visits
+        WHERE property_id IN (?,?) AND status='completed' ORDER BY completed_at DESC,id DESC LIMIT 1""",
+        (source,target)).fetchone()
+    if viewing_owner:
+        ready = conn.execute('SELECT viewing_documents_ready FROM properties WHERE id=?',(viewing_owner['property_id'],)).fetchone()[0]
+        conn.execute('UPDATE properties SET viewing_documents_ready=? WHERE id=?',(ready,target))
     conn.execute('UPDATE listings SET property_id=? WHERE property_id=?', (target, source))
     conn.execute('UPDATE price_history SET property_id=? WHERE property_id=?', (target, source))
     conn.execute('UPDATE property_visits SET property_id=? WHERE property_id=?', (target, source))

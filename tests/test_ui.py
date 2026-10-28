@@ -227,14 +227,14 @@ def test_shared_review_ui_login_roles_refresh_and_layout(tmp_path, monkeypatch):
                 await page.locator('#visit-comment').fill('<script>Не понравилось</script> · Шумно')
                 await page.locator('#visit-save').click()
                 await expect(page.locator('#visit-dialog')).not_to_be_visible()
-                await page.locator('#rejected-section > summary').click()
+                await page.locator('#viewed-rejected-section > summary').click()
                 await expect(visit_row).to_be_visible()
-                await expect(visit_row).to_have_class('review-rejected')
+                await expect(visit_row).to_have_class('review-rejected viewed-rejected')
                 await expect(visit_row.locator('.review-label')).to_have_text('Не подходит')
                 await expect(visit_row.locator('td').last).to_contain_text('Не понравилось')
                 await page.reload()
                 await expect(visit_row).to_be_hidden()
-                await page.locator('#rejected-section > summary').click()
+                await page.locator('#viewed-rejected-section > summary').click()
                 await expect(visit_row.locator('td').last).to_contain_text('Не понравилось')
                 await visit_row.locator('td').last.get_by_role('button',name='Добавить результат',exact=True).click()
                 await page.locator('#visit-record-choice').select_option('new')
@@ -242,7 +242,7 @@ def test_shared_review_ui_login_roles_refresh_and_layout(tmp_path, monkeypatch):
                 await page.locator('#visit-date').fill('2026-11-01T18:30')
                 await page.locator('#visit-save').click()
                 await expect(page.locator('#visit-dialog')).not_to_be_visible()
-                await expect(visit_row).to_have_class('review-rejected')
+                await expect(visit_row).to_have_class('review-rejected viewed-rejected')
                 await expect(visit_row.locator('.visit-history')).to_contain_text('Не понравилось')
                 assert await page.evaluate('document.documentElement.scrollWidth <= innerWidth')
                 assert await page.locator('.table-wrap').evaluate('el => el.scrollWidth > el.clientWidth')
@@ -536,19 +536,19 @@ def test_viewing_dates_rejections_agenda_conflicts_and_comparison_on_phone(tmp_p
                 page=await context.new_page()
                 errors=[];page.on('pageerror',lambda error:errors.append(str(error)))
                 await page.goto('https://xata.test/')
-                await expect(page.locator('#listings tr')).to_have_count(5)
+                await expect(page.locator('#listings tr')).to_have_count(4)
                 await expect(page.locator('#rejected-listings tr')).to_have_count(1)
                 assert not await page.locator('#rejected-section').evaluate('el=>el.open')
                 await expect(page.locator('#rejected-count')).to_have_text('1')
-                await expect(page.locator('[data-review-filter="all"] span')).to_have_text('5')
+                await expect(page.locator('[data-review-filter="all"] span')).to_have_text('4')
                 await expect(page.locator('[data-review-filter="planned"] span')).to_have_text('3')
                 row=page.locator('tr[data-listing-id="9100"]')
                 await expect(row.locator('td').nth(12)).to_contain_text('Укажите результат просмотра')
                 sort=page.locator('#listing-table [data-sort="visit_date"]')
                 await sort.click()
-                assert (await page.locator('#listings tr').evaluate_all('rows=>rows.map(r=>r.dataset.listingId)'))[:2]==['9101','9100']
+                assert (await page.locator('#listings tr').evaluate_all('rows=>rows.map(r=>r.dataset.listingId)'))[:1]==['9100']
                 await sort.click()
-                assert (await page.locator('#listings tr').evaluate_all('rows=>rows.map(r=>r.dataset.listingId)'))[:2]==['9100','9101']
+                assert (await page.locator('#listings tr').evaluate_all('rows=>rows.map(r=>r.dataset.listingId)'))[:1]==['9100']
                 await sort.click()
                 assert await sort.locator('..').get_attribute('aria-sort')=='none'
                 assert not await page.locator('#rejected-section').evaluate('el=>el.open')
@@ -601,7 +601,7 @@ def test_viewing_dates_rejections_agenda_conflicts_and_comparison_on_phone(tmp_p
                 await page.evaluate("const form=document.querySelector('#visit-form');form.requestSubmit();form.requestSubmit();")
                 await expect(page.locator('#visit-dialog')).to_be_hidden()
                 assert len(writes)==writes_before+1
-                await expect(page.locator('#rejected-count')).to_have_text('2')
+                await expect(page.locator('#rejected-count')).to_have_text('1')
                 assert not await page.locator('#rejected-section').evaluate('el=>el.open')
                 assert len(state()['9100']['visits'])==2
                 result=next(v for v in state()['9100']['visits'] if v['id']==past['id'])
@@ -609,14 +609,22 @@ def test_viewing_dates_rejections_agenda_conflicts_and_comparison_on_phone(tmp_p
                 assert result['completed_at']=='2026-10-10T16:45:00+00:00'
                 await page.locator('[data-review-filter="all"]').click()
                 await expect(page.locator('#listings tr[data-listing-id="9100"]')).to_have_count(0)
-                await page.locator('#rejected-section > summary').click()
+                await page.locator('#viewed-rejected-section > summary').click()
                 await expect(row).to_be_visible()
                 await expect(row.locator('.visit-rejection-reasons').first).to_contain_text('Шум, Документы')
                 assert await row.locator('b').count()==0
                 await row.locator('.review-select').select_option('liked')
-                await expect(page.locator('#listings tr[data-listing-id="9100"]')).to_have_count(1)
-                # Old negative history alone does not prevent returning.
+                await expect(page.locator('#viewed-rejected-listings tr[data-listing-id="9100"]')).to_have_count(1)
+                # A manual ad opinion cannot replace the actual viewing result.
                 assert state()['9100']['visits'][1]['outcome']=='rejected'
+                await row.locator('td').last.get_by_role('button',name='Добавить результат',exact=True).click()
+                await page.locator('#visit-record-choice').select_option('new')
+                await page.locator('[data-visit-outcome="liked"]').click()
+                await page.locator('#visit-date').fill('2026-10-11T19:45')
+                await page.locator('#visit-save').click()
+                await expect(page.locator('#visit-dialog')).to_be_hidden()
+                await expect(page.locator('#viewed-liked-listings tr[data-listing-id="9100"]')).to_have_count(1)
+                await page.locator('#rejected-section > summary').click()
                 refused_row=page.locator('tr[data-listing-id="9102"]')
                 await refused_row.locator('.review-select').select_option('liked')
                 await expect(refused_row.locator('.return-hint')).to_contain_text('отказ риелтора')
@@ -651,7 +659,7 @@ def test_viewing_dates_rejections_agenda_conflicts_and_comparison_on_phone(tmp_p
                 await expect(square.locator('td').first).to_contain_text('300')
                 await expect(square.locator('td').nth(2)).to_have_text('—')
                 result_row=page.get_by_role('rowheader',name='Результат просмотра',exact=True).locator('..')
-                await expect(result_row.locator('td').first).to_have_text('Не понравилось')
+                await expect(result_row.locator('td').first).to_have_text('Понравилось')
                 await expect(result_row.locator('td').nth(1)).to_have_text('Понравилось')
                 await expect(result_row.locator('td').nth(2)).to_have_text('—')
                 assert await page.locator('#compare-table b').count()==0
@@ -666,9 +674,9 @@ def test_viewing_dates_rejections_agenda_conflicts_and_comparison_on_phone(tmp_p
                 await expect(page.locator('#compare-dialog-message')).to_contain_text('убрана из сравнения')
                 await page.locator('#compare-close').click()
                 await page.reload()
-                await expect(page.locator('#rejected-count')).to_have_text('2')
+                await expect(page.locator('#rejected-count')).to_have_text('1')
                 assert not await page.locator('#rejected-section').evaluate('el=>el.open')
-                await page.locator('#rejected-section > summary').click()
+                await row.locator('.visit-history > summary').click()
                 await expect(row.locator('.visit-rejection-reasons').first).to_contain_text('Шум, Документы')
                 persisted=next(v for v in state()['9100']['visits'] if v['id']==past['id'])
                 assert persisted['preparation']=='До поездки: спросить про документы'
@@ -878,7 +886,7 @@ def test_confirmed_calendar_date_drafts_permissions_mobile_and_timezone(tmp_path
                 assert len(current()['visits'])==2 and current()['review_status']=='rejected'
                 completed=next(v for v in current()['visits'] if v['id']==visit['id'])
                 assert completed['completed_at']=='2026-10-26T17:15:00+00:00'
-                await page.locator('#rejected-section > summary').click()
+                await page.locator('#viewed-rejected-section > summary').click()
                 await result_cell.get_by_role('button',name='Добавить результат',exact=True).click()
                 await expect(page.locator('#visit-comment')).to_have_value('Шумно после просмотра')
                 await expect(page.locator('#visit-reasons input[value="noise"]')).to_be_checked()
@@ -1007,6 +1015,149 @@ def test_calendar_icon_opens_real_day_grid_on_desktop_and_touch_phone(tmp_path,m
                 await expect(field).to_have_value('01.11.2026')
                 await expect(popup).to_be_hidden()
                 assert await page.evaluate('document.documentElement.scrollWidth<=innerWidth')
+                assert errors==[]
+                await context.close();await browser.close()
+        asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('phone',[False,True])
+def test_viewed_groups_controls_colors_legacy_refresh_and_mobile(tmp_path,monkeypatch,phone):
+    monkeypatch.setenv('DATA_DIR',str(tmp_path));monkeypatch.setenv('APP_USER','owner')
+    monkeypatch.setenv('APP_PASSWORD','long-test-password');monkeypatch.setenv('BROWSER_SCHEDULE_ENABLED','false')
+    monkeypatch.delenv('PUBLIC_URL',raising=False)
+    from app import main
+    importlib.reload(main)
+    monkeypatch.setattr(main.CianBrowserSource,'status',lambda self:{'status':'authorized','message':'Авторизован','manual_access':False})
+    with main.database() as conn:
+        main.save_items(conn,[{'id':str(key),'url':'https://cian.ru/sale/flat/'+str(key)+'/',
+            'title':'Квартира','address':'Москва, очень длинный адрес квартиры '+str(key),'price':12000000,'area':40}
+            for key in range(9500,9507)],'2026-10-26T10:00:00+00:00')
+    with TestClient(main.app,base_url='https://xata.test') as client:
+        sign_in(client)
+        def current(key):
+            return next(i for i in client.get('/api/state').json()['listings'] if i['id']==key)
+        def complete(key,outcome,day):
+            item=current(key)
+            response=client.post('/api/listings/'+key+'/visits',json={'property_id':item['property_id'],
+                'status':'completed','outcome':outcome,'completed_at':day+'T10:00:00Z','comment':'Общий итог'})
+            assert response.status_code==200,response.text
+            return response.json()
+        assert client.post('/api/listings/9500/review',json={'status':'liked'}).status_code==200
+        complete('9501','liked','2026-10-21')
+        item=complete('9502','liked','2026-10-20')
+        assert client.patch('/api/listings/9502/viewing-classification',json={'property_id':item['property_id'],
+            'visits_version':item['visits_version'],'documents_ready':True}).status_code==200
+        complete('9503','liked','2026-10-19')
+        item=complete('9503','rejected','2026-10-24')
+        negative=item['visits'][0]
+        assert client.post('/api/listings/9503/visits',json={'property_id':item['property_id'],
+            'status':'planned','scheduled_at':'2030-01-01T10:00:00Z','preparation':'Спросить ещё раз'}).status_code==200
+        complete('9505','thinking','2026-10-24')
+        complete('9506','liked','2026-10-23')
+        for key in ('9501','9504'):
+            assert client.post('/api/listings/'+key+'/realtor-review',json={'status':'rejected','comment':'Проверить документы'}).status_code==200
+        for username,role in [('buyer','reviewer'),('expert','realtor')]:
+            assert client.post('/api/users',json={'username':username,'display_name':username,'password':'password-123','role':role}).status_code==201
+        sign_in(client,'buyer','password-123')
+        async def scenario():
+            from playwright.async_api import async_playwright,expect
+            stale=None;inject=False
+            async def bridge(route):
+                nonlocal inject
+                request=route.request;parsed=urlsplit(request.url)
+                assert parsed.hostname=='xata.test'
+                path=parsed.path+('?' + parsed.query if parsed.query else '')
+                if path=='/api/state' and inject:
+                    inject=False
+                    await route.fulfill(status=200,content_type='application/json',body=json.dumps(stale))
+                    return
+                headers={k:v for k,v in request.headers.items() if k.lower() in ('content-type','origin','sec-fetch-site','x-csrf-token')}
+                response=client.request(request.method,path,headers=headers,content=request.post_data_buffer,follow_redirects=False)
+                forwarded={k:v for k,v in response.headers.items() if k.lower() not in ('set-cookie','content-length','content-encoding','transfer-encoding')}
+                await route.fulfill(status=response.status_code,headers=forwarded,body=response.content)
+            async with async_playwright() as p:
+                browser=await p.chromium.launch(headless=True)
+                context=await browser.new_context(viewport={'width':390 if phone else 1440,'height':900},has_touch=phone,is_mobile=phone)
+                await context.route('**/*',bridge)
+                page=await context.new_page();errors=[]
+                page.on('pageerror',lambda error:errors.append(str(error)))
+                await page.goto('https://xata.test/')
+                await expect(page.locator('#listings tr')).to_have_count(2)
+                await expect(page.locator('#rejected-listings tr')).to_have_count(1)
+                await expect(page.locator('#viewed-count')).to_have_text('4')
+                for group,count,opened in [('liked','2',True),('documents','1',True),('rejected','1',False)]:
+                    await expect(page.locator('#viewed-'+group+'-count')).to_have_text(count)
+                    assert await page.locator('#viewed-'+group+'-section').evaluate('el=>el.open')==opened
+                await expect(page.locator('#viewed-legacy-warning')).to_contain_text('Думаем')
+                await expect(page.locator('#listings tr[data-listing-id="9505"] .viewed-group-label')).to_have_text('Думаем — группа не выбрана')
+                assert current('9505')['visits'][0]['outcome']=='thinking'
+                assert await page.locator('tr[data-property-id]').count()==7
+                assert len(set(await page.locator('tr[data-property-id]').evaluate_all('rows=>rows.map(r=>r.dataset.propertyId)')))==7
+                row=page.locator('tr[data-listing-id="9501"]')
+                await expect(row.locator('.realtor-label')).to_have_text('Отбраковано риелтором')
+                await expect(row.locator('.realtor-editor')).to_be_hidden()
+                await expect(row.locator('.viewed-group-label')).to_have_text('Понравилось — пока без проверки документов')
+                assert await row.locator('td').first.evaluate('el=>getComputedStyle(el).backgroundColor')=='rgb(233, 243, 252)'
+                assert '73, 134, 181' in await row.locator('td').first.evaluate('el=>getComputedStyle(el).boxShadow')
+                stale=client.get('/api/state').json()
+                before=current('9501')
+                await row.locator('.viewed-stage-toggle').click()
+                await expect(page.locator('#viewed-documents-listings tr[data-listing-id="9501"]')).to_have_count(1)
+                after=current('9501')
+                assert after['visits']==before['visits']
+                assert after['review_status']==before['review_status']
+                assert after['realtor_status']==before['realtor_status']=='rejected'
+                assert await row.locator('td').first.evaluate('el=>getComputedStyle(el).backgroundColor')=='rgb(233, 245, 231)'
+                await expect(row.locator('.realtor-label')).to_have_text('Отбраковано риелтором')
+                inject=True
+                await page.evaluate('refresh(true)')
+                await expect(page.locator('#viewed-documents-listings tr[data-listing-id="9501"]')).to_have_count(1)
+                await row.locator('.viewed-stage-toggle').click()
+                await expect(page.locator('#viewed-liked-listings tr[data-listing-id="9501"]')).to_have_count(1)
+                await row.locator('.viewed-stage-toggle').click()
+                await expect(page.locator('#viewed-documents-listings tr[data-listing-id="9501"]')).to_have_count(1)
+                await row.locator('td').last.get_by_role('button',name='Добавить результат',exact=True).click()
+                await page.locator('#visit-comment').fill('<b>Уточнение</b> после поездки')
+                await page.evaluate('refresh(true)')
+                await expect(page.locator('#visit-comment')).to_have_value('<b>Уточнение</b> после поездки')
+                await page.locator('#visit-save').click()
+                await expect(page.locator('#visit-dialog')).to_be_hidden()
+                assert current('9501')['viewed_group']=='documents'
+                await page.locator('[data-review-filter="planned"]').click()
+                await expect(page.locator('#visit-agenda .visit-card')).to_have_count(1)
+                await expect(page.locator('#visit-agenda')).to_contain_text('Спросить ещё раз')
+                await page.locator('[data-review-filter="all"]').click()
+                # Groups stay independent from main filters; their dates still sort.
+                await page.locator('[data-review-filter="new"]').click()
+                await expect(page.locator('tr[data-listing-id="9506"]')).to_be_visible()
+                await page.locator('#viewed-liked-section [data-sort="visit_date"]').click()
+                assert await page.locator('#viewed-liked-listings tr').evaluate_all('rows=>rows.map(r=>r.dataset.listingId)')==['9506']
+                await page.locator('#viewed-rejected-section > summary').click()
+                negative_row=page.locator('tr[data-listing-id="9503"]')
+                await expect(negative_row.locator('.viewed-group-label')).to_have_text('Не понравилось')
+                assert await negative_row.locator('td').first.evaluate('el=>getComputedStyle(el).backgroundColor')=='rgb(251, 236, 235)'
+                await negative_row.locator('td').last.get_by_role('button',name='Добавить результат',exact=True).click()
+                await page.locator('#visit-record-choice').select_option(str(negative['id']))
+                await page.locator('[data-visit-outcome="liked"]').click()
+                await page.locator('#visit-save').click()
+                await expect(page.locator('#visit-dialog')).to_be_hidden()
+                await expect(page.locator('#viewed-liked-listings tr[data-listing-id="9503"]')).to_have_count(1)
+                assert current('9503')['viewed_group']=='liked' and len(current('9503')['visits'])==3
+                await page.reload()
+                await expect(page.locator('#viewed-documents-listings tr[data-listing-id="9501"]')).to_have_count(1)
+                assert not await page.locator('#viewed-rejected-section').evaluate('el=>el.open')
+                assert not await page.locator('#rejected-section').evaluate('el=>el.open')
+                for group in ('liked','documents'):
+                    assert await page.locator('#viewed-'+group+'-section').evaluate('el=>el.open')
+                assert await page.evaluate('document.documentElement.scrollWidth<=innerWidth')
+                assert await page.locator('#viewed-documents-section .viewed-wrap').evaluate('el=>el.scrollWidth>el.clientWidth')
+                if phone:
+                    box=await row.locator('.viewed-stage-toggle').bounding_box()
+                    assert box['height']>=44
+                sign_in(client,'expert','password-123')
+                await page.reload()
+                await expect(row.locator('.viewed-stage-toggle')).to_be_hidden()
+                await expect(row.locator('.visit-date-input')).to_be_visible()
                 assert errors==[]
                 await context.close();await browser.close()
         asyncio.run(scenario())

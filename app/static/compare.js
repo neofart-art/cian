@@ -15,7 +15,7 @@ globalThis.XataCompare={create({getItem,render}) {
   function announce(value){notice.textContent=value;document.querySelector('#compare-dialog-message').textContent=value;}
   function toggle(key,checked) {
     if(!checked)selected.delete(key);
-    else if(selected.size<4&&getItem(key)&&XataReview.effectiveStatus(getItem(key))!=='rejected')selected.add(key);
+    else if(selected.size<4&&getItem(key)&&XataReview.comparisonEligible(getItem(key)))selected.add(key);
     else if(selected.size>=4)announce('Можно сравнить не более четырёх квартир.');
     render();
   }
@@ -24,9 +24,9 @@ globalThis.XataCompare={create({getItem,render}) {
     for(const key of selected) {
       const item=getItem(key);
       if(!item) {selected.delete(key);missing++;}
-      else if(XataReview.effectiveStatus(item)==='rejected'){selected.delete(key);rejected++;}
+      else if(!XataReview.comparisonEligible(item)){selected.delete(key);rejected++;}
     }
-    if(rejected)announce('Квартира перемещена в «Не подходят» и убрана из сравнения.');
+    if(rejected)announce('Квартира получила отказ и убрана из сравнения.');
     else if(missing)announce('Состав объектов изменился. Недоступная квартира убрана из сравнения.');
     const count=selected.size;
     document.querySelector('#compare-count').textContent=count;
