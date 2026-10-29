@@ -842,7 +842,7 @@ def two_page_app(tmp_path,monkeypatch):
             'metro':'Сокол','metro_time':'8 мин. пешком',
             **({'cover_image_url':'https://images.cdn-cian.ru/images/one.jpg'} if key==9502 else {})}
             for key in range(9500,9509)],'2026-10-26T10:00:00+00:00')
-    covers.sync_one('9502')
+    main.covers.sync_one('9502')
     with TestClient(main.app,base_url='https://xata.test') as client:
         sign_in(client)
         def current(key):
