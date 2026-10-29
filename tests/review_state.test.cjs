@@ -202,24 +202,24 @@ test('post-visit sections are exclusive, based on latest actual result rather th
     const item={id:'1',review_status,realtor_status};
     assert.equal(state.viewedGroup(item),null);
     assert.equal(state.section(item),state.effectiveStatus(item)==='rejected'?'refused':'main');
-    const liked={...item,visits:[visit(2,'liked','2026-10-23'),visit(5,'rejected','2026-10-20')]};
-    assert.equal(state.section(liked),'liked');
-    assert.equal(state.section({...liked,viewing_documents_ready:true}),'documents');
-    assert.equal(state.section({...liked,visits:[...liked.visits,visit(6,'rejected','2026-10-24')]}),'rejected');
+    const liked={...item,in_our_list:true,visits:[visit(2,'liked','2026-10-23'),visit(5,'rejected','2026-10-20')]};
+    assert.equal(state.section(liked,'ours'),'liked');
+    assert.equal(state.section({...liked,viewing_documents_ready:true},'ours'),'documents');
+    assert.equal(state.section({...liked,visits:[...liked.visits,visit(6,'rejected','2026-10-24')]},'ours'),'rejected');
   }
   const thinking={review_status:'viewed',visits:[visit(3,'thinking','2026-10-24')]};
   assert.equal(state.viewedGroup(thinking),null);assert.equal(state.section(thinking),'main');
-  const tied={visits:[visit(7,'liked','2026-10-24'),visit(8,'rejected','2026-10-24')]};
-  assert.equal(state.section(tied),'rejected');
+  const tied={in_our_list:true,visits:[visit(7,'liked','2026-10-24'),visit(8,'rejected','2026-10-24')]};
+  assert.equal(state.section(tied,'ours'),'rejected');
 });
 test('document classification and viewing revision survive stale polls and Cian republication',()=>{
-  const previous={id:'1',property_id:3,visits_version:7,viewing_documents_ready:true,viewed_group:'documents',
+  const previous={id:'1',property_id:3,in_our_list:true,selection_version:2,visits_version:7,viewing_documents_ready:true,viewed_group:'documents',
     visits:[{id:1,status:'completed',outcome:'liked',completed_at:'2026-10-24T10:00:00Z'}]};
-  const result=state.merge(previous,{id:'2',property_id:3,price:100,visits_version:6,viewing_documents_ready:false,visits:[]});
-  assert.equal(state.section(result),'documents');assert.equal(result.viewed_group,'documents');
+  const result=state.merge(previous,{id:'2',property_id:3,price:100,in_our_list:true,selection_version:2,visits_version:6,viewing_documents_ready:false,visits:[]});
+  assert.equal(state.section(result,'ours'),'documents');assert.equal(result.viewed_group,'documents');
   assert.equal(result.id,'2');assert.equal(result.price,100);
   const next=state.merge(result,{...result,visits_version:8,viewing_documents_ready:false});
-  assert.equal(state.section(next),'liked');
+  assert.equal(state.section(next,'ours'),'liked');
 });
 test('comparison remains read-only and rejects negative completed results even after manual family reset',()=>{
   const item={review_status:'liked',realtor_status:'pending',visits:[{id:1,status:'completed',outcome:'rejected',completed_at:'2026-10-24T10:00:00Z'}]};
@@ -228,4 +228,23 @@ test('comparison remains read-only and rejects negative completed results even a
   assert.equal(state.comparisonEligible(liked),true);
   assert.equal(state.comparisonEligible({...liked,realtor_status:'rejected'}),false);
   assert.equal(item.review_status,'liked');
+});
+
+test('membership independently protects stale polls and partitions both pages',()=>{
+  const previous={id:'1',property_id:9,in_our_list:true,selection_version:5,visits_version:4,visits:[]};
+  const merged=state.merge(previous,{id:'2',property_id:9,in_our_list:false,selection_version:4,visits_version:3,visits:[],price:12});
+  assert.equal(merged.in_our_list,true);assert.equal(merged.price,12);
+  assert.equal(state.section(merged,'all'),null);assert.equal(state.section(merged,'ours'),'planned');
+  const removed=state.merge(merged,{...merged,in_our_list:false,selection_version:6,realtor_status:'rejected'});
+  assert.equal(state.section(removed,'all'),'refused');assert.equal(state.section(removed,'ours'),null);
+  const thinking={...previous,visits:[{id:1,status:'completed',outcome:'thinking',completed_at:'2026-10-24T10:00:00Z'}]};
+  assert.equal(state.section(thinking,'ours'),'planned');
+});
+test('family opinions and realtor rejection never remove a selected apartment',()=>{
+  for(const review_status of ['new','liked','viewed','rejected'])for(const realtor_status of ['pending','approved','rejected']){
+    for(const [outcome,group] of [['liked','liked'],['rejected','rejected'],['thinking','planned']]){
+      const item={in_our_list:true,review_status,realtor_status,visits:[{id:1,status:'completed',outcome,completed_at:'2026-10-24T10:00:00Z'}]};
+      assert.equal(state.section(item,'all'),null);assert.equal(state.section(item,'ours'),group);
+    }
+  }
 });

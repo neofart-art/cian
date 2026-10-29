@@ -14,7 +14,7 @@
   }
   function merge(previous, incoming) {
     const result = {...incoming};
-    if (previous) for (const [version,fields] of [['review_version',reviewFields],['realtor_version',realtorFields],['visits_version',['visits','visits_version','viewing_documents_ready','viewed_group']]]) {
+    if (previous) for (const [version,fields] of [['selection_version',['in_our_list','selection_version']],['review_version',reviewFields],['realtor_version',realtorFields],['visits_version',['visits','visits_version','viewing_documents_ready','viewed_group']]]) {
       if (Number(previous[version] || 0) > Number(incoming[version] || 0))
         for (const key of fields) result[key] = previous[key];
     }
@@ -70,7 +70,10 @@
     if(!visit||visit.outcome==='thinking')return null;
     return visit.outcome==='liked'?(item.viewing_documents_ready?'documents':'liked'):'rejected';
   }
-  function section(item) { return viewedGroup(item)|| (effectiveStatus(item)==='rejected'?'refused':'main'); }
+  function section(item,page='all') {
+    if(page==='ours')return item.in_our_list?(viewedGroup(item)||'planned'):null;
+    return item.in_our_list?null:(effectiveStatus(item)==='rejected'?'refused':'main');
+  }
   function comparisonEligible(item) { return effectiveStatus(item)!=='rejected'&&viewedGroup(item)!=='rejected'; }
   function displayVisit(item) { return nextVisit(item) || latestCompleted(item); }
   const calendar=new Intl.DateTimeFormat('en-CA',{timeZone:'Europe/Moscow',year:'numeric',month:'2-digit',day:'2-digit'});

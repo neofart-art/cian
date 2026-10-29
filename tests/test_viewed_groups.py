@@ -199,7 +199,7 @@ def test_merge_import_and_republication_preserve_latest_property_classification(
     book=load_workbook(io.BytesIO(admin.get('/api/export.xlsx').content))
     sheet=book['Объявления']
     column=next(c.column for c in sheet[1] if c.value=='Группа после просмотра')
-    assert any(sheet.cell(row,column).value=='Понравилось — готовимся к проверке документов' for row in range(2,sheet.max_row+1))
+    assert any(sheet.cell(row,column).value=='Проверка документов' for row in range(2,sheet.max_row+1))
     assert book['Просмотры'].max_row==3
 
 

@@ -150,6 +150,10 @@ def migrate_listings(database):
             conn.execute('UPDATE listings SET property_id=? WHERE id=?', (property_id, row['id']))
 
         conn.execute('CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)')
+        if not conn.execute("SELECT 1 FROM schema_migrations WHERE name='our_list_initial_selection_v1'").fetchone():
+            conn.execute("""UPDATE properties SET in_our_list=1,selection_version=selection_version+1
+                            WHERE id IN (SELECT DISTINCT property_id FROM property_visits) AND in_our_list=0""")
+            conn.execute('INSERT INTO schema_migrations VALUES (?,?)',('our_list_initial_selection_v1',now))
         # Existing reviewed rows must not be matched destructively at startup.
         # Give each legacy listing its own property; only future, unambiguous
         # relistings can auto-join. Already-confirmed Phase 3 groups stay intact.

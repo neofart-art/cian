@@ -192,6 +192,8 @@ def property_listing_data(conn, row, context=None):
     item['visits'] = context['visits'].get(pid, [])
     item['visits_version'] = context['props'][pid]['visits_version']
     item['viewing_documents_ready'] = bool(context['props'][pid]['viewing_documents_ready'])
+    item['in_our_list'] = bool(context['props'][pid]['in_our_list'])
+    item['selection_version'] = context['props'][pid]['selection_version']
     item['viewed_group'] = viewings.classification(item['visits'],item['viewing_documents_ready'])
     return item
 
@@ -378,7 +380,7 @@ async def protect_origin(request, call_next):
     response = denied if denied is not None else await call_next(request)
     response.headers['X-Content-Type-Options'] = 'nosniff'
     response.headers['Referrer-Policy'] = 'same-origin'
-    if request.url.path in ('/', '/login') or request.url.path.startswith('/api/'):
+    if request.url.path in ('/', '/ours', '/login') or request.url.path.startswith('/api/'):
         response.headers['Cache-Control'] = 'no-store'
     elif request.url.path.startswith('/static/'):
         response.headers['Cache-Control'] = 'no-cache, must-revalidate'
@@ -391,8 +393,22 @@ ASSET_VERSIONS = {name: hashlib.sha256((STATIC / name).read_bytes()).hexdigest()
                   for name in ('app.js', 'visits.js', 'compare.js', 'review-state.js', 'login.js', 'style.css', 'xata-logo.svg', 'xata-mark.svg')}
 
 
-def html_document(name):
+def html_document(name, page='all'):
     document = (STATIC / name).read_text(encoding='utf-8')
+    if name=='index.html':
+        # Only two fixed application modes; no request-controlled template paths.
+        ours = page=='ours'
+        partial = 'our-listings.html' if ours else 'all-listings.html'
+        document = document.replace('@@RESULTS@@',(STATIC / partial).read_text(encoding='utf-8'))
+        search = (STATIC / 'search-tools.html').read_text(encoding='utf-8') if not ours else ''
+        document = document.replace('@@SEARCH@@',search)
+        document = document.replace('@@PAGE@@','ours' if ours else 'all')
+        document = document.replace('@@TITLE@@','Наши квартиры' if ours else 'Все объявления')
+        document = document.replace('@@ALL_CURRENT@@','' if ours else ' aria-current="page"')
+        document = document.replace('@@OURS_CURRENT@@',' aria-current="page"' if ours else '')
+        if not ours:
+            document = document.replace('<script src="/static/visits.js" defer></script>','')
+            document = document.replace('<script src="/static/compare.js" defer></script>','')
     for asset, version in ASSET_VERSIONS.items():
         document = document.replace('/static/' + asset + '"', '/static/' + asset + '?v=' + version + '"')
     return HTMLResponse(document)
@@ -403,6 +419,13 @@ def index(request: Request):
     if not security.principal(request):
         return RedirectResponse('/login', status_code=303)
     return html_document('index.html')
+
+
+@app.get('/ours')
+def our_apartments(request: Request):
+    if not security.principal(request):
+        return RedirectResponse('/login',status_code=303)
+    return html_document('index.html','ours')
 
 
 @app.get('/login')
@@ -500,6 +523,16 @@ def save_viewing(listing_id, data, user, visit_id=None):
 @app.post('/api/listings/{listing_id}/visits')
 def create_viewing(listing_id: str, data: viewings.VisitInput, user=Depends(auth)):
     return save_viewing(listing_id, data, user)
+
+
+@app.patch('/api/listings/{listing_id}/selection')
+def update_selection(listing_id: str, data: viewings.SelectionInput, user=Depends(auth)):
+    if user['role'] not in ('admin','reviewer'):
+        raise HTTPException(403,'Наш список меняют только покупатели и администратор')
+    with database() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        pid = viewings.save_selection(conn,listing_id,data)
+        return property_listing_data(conn,current_property_row(conn,pid))
 
 
 @app.patch('/api/listings/{listing_id}/viewing-classification')
@@ -774,7 +807,7 @@ def export():
     book = Workbook()
     sheet = book.active
     sheet.title = 'Объявления'
-    sheet.append(['ID', 'Название', 'Цена, ₽', 'Адрес', 'Ссылка', 'Впервые найдено (UTC)', 'Последнее обновление (UTC)', 'ЖК', 'Площадь, м²', 'Этаж', 'Метро', 'Время до метро', 'Источник', 'Последний импорт (UTC)', 'Текст карточки', 'Описание', 'Пешком до метро, мин', 'Статус', 'Статус изменил', 'Дата изменения статуса (UTC)', 'Оценка риелтора', 'Комментарий риелтора', 'Риелторскую оценку изменил', 'Дата риелторской оценки (UTC)', 'Ипотека / мес. (6 млн / 18% / 15 лет)', 'Property ID', 'Все CIAN ID', 'Перепубликаций', 'Мин. замеченная цена, ₽', 'Макс. замеченная цена, ₽', 'Возможный дубль, %', 'История цен (UTC)', 'Публикации: даты и состояние', 'Группа после просмотра'])
+    sheet.append(['ID', 'Название', 'Цена, ₽', 'Адрес', 'Ссылка', 'Впервые найдено (UTC)', 'Последнее обновление (UTC)', 'ЖК', 'Площадь, м²', 'Этаж', 'Метро', 'Время до метро', 'Источник', 'Последний импорт (UTC)', 'Текст карточки', 'Описание', 'Пешком до метро, мин', 'Статус', 'Статус изменил', 'Дата изменения статуса (UTC)', 'Оценка риелтора', 'Комментарий риелтора', 'Риелторскую оценку изменил', 'Дата риелторской оценки (UTC)', 'Ипотека / мес. (6 млн / 18% / 15 лет)', 'Property ID', 'Все CIAN ID', 'Перепубликаций', 'Мин. замеченная цена, ₽', 'Макс. замеченная цена, ₽', 'Возможный дубль, %', 'История цен (UTC)', 'Публикации: даты и состояние', 'Группа после просмотра', 'В нашем списке'])
     with database() as conn:
         items = sorted(grouped_listing_data(conn), key=lambda item: (item['price'] is None, item['price'] or 0))
         for item in items:
@@ -790,10 +823,11 @@ def export():
                 '\n'.join(f"{entry['observed_at']} · CIAN {entry['listing_id']} · {entry['price']} ₽" for entry in item['price_history']),
                 '\n'.join(f"CIAN {entry['id']} · {entry['first_seen']} — {entry['last_seen']} · {entry['status']}" for entry in item['publication_history']),
             ]
-            values.append({'liked':'Понравилось — пока без проверки документов',
-                           'documents':'Понравилось — готовимся к проверке документов',
+            values.append({'liked':'Оставляем в запасе',
+                           'documents':'Проверка документов',
                            'rejected':'Не понравилось'}.get(item['viewed_group'],
-                              'Думаем — группа не выбрана' if any(v['status']=='completed' and v['outcome']=='thinking' for v in item['visits']) else ''))
+                              'Думаем — уточните результат' if any(v['status']=='completed' and v['outcome']=='thinking' for v in item['visits']) else ''))
+            values.append('Да' if item['in_our_list'] else 'Нет')
             sheet.append([("'" + value if isinstance(value, str) and value.startswith(('=', '+', '-', '@')) else value) for value in values])
     visits_sheet = book.create_sheet('Просмотры')
     visits_sheet.append(['Property ID','Текущий CIAN ID','Адрес','ID просмотра','Дата встречи (UTC)',

@@ -24,6 +24,12 @@ def migrate(conn):
         conn.execute('ALTER TABLE properties ADD COLUMN visits_version INTEGER NOT NULL DEFAULT 0')
     if 'viewing_documents_ready' not in columns:
         conn.execute('ALTER TABLE properties ADD COLUMN viewing_documents_ready INTEGER NOT NULL DEFAULT 0 CHECK(viewing_documents_ready IN (0,1))')
+    for name,definition in {
+        'in_our_list':'INTEGER NOT NULL DEFAULT 0 CHECK(in_our_list IN (0,1))',
+        'selection_version':'INTEGER NOT NULL DEFAULT 0',
+    }.items():
+        if name not in columns:
+            conn.execute('ALTER TABLE properties ADD COLUMN '+name+' '+definition)
     conn.execute('''CREATE TABLE IF NOT EXISTS property_visits(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         property_id INTEGER NOT NULL REFERENCES properties(id),
@@ -161,6 +167,29 @@ def classification(visits, documents_ready=False):
     if latest is None or latest['outcome']=='thinking':
         return None
     return ('documents' if documents_ready else 'liked') if latest['outcome']=='liked' else 'rejected'
+
+
+class SelectionInput(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    property_id: int = Field(ge=1)
+    selection_version: int = Field(ge=0)
+    selected: bool = Field(strict=True)
+
+
+def save_selection(conn, listing_id, data):
+    target = conn.execute('SELECT property_id FROM listings WHERE id=?',(listing_id,)).fetchone()
+    if target is None:
+        raise HTTPException(404,'Объявление не найдено')
+    pid = target['property_id']
+    if pid != data.property_id:
+        raise HTTPException(409,'Объекты изменились. Обновите страницу')
+    prop = conn.execute('SELECT in_our_list,selection_version FROM properties WHERE id=?',(pid,)).fetchone()
+    if prop['selection_version'] != data.selection_version:
+        raise HTTPException(409,'Принадлежность к нашему списку уже изменена. Обновите страницу и повторите действие')
+    if bool(prop['in_our_list']) != data.selected:
+        conn.execute('UPDATE properties SET in_our_list=?,selection_version=selection_version+1 WHERE id=?',
+                     (int(data.selected),pid))
+    return pid
 
 
 class ClassificationInput(BaseModel):

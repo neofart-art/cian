@@ -1,15 +1,17 @@
 'use strict';
+const ourPage=document.body.dataset.page==='ours', pageMode=ourPage?'ours':'all';
 const form = document.querySelector('#filters');
 const button = document.querySelector('#collect');
 const status = document.querySelector('#status');
 const message = document.querySelector('#page-message');
-const records = new Map(), rows = new Map(), pendingReviews = new Set(), pendingRealtors = new Set(), pendingDuplicates = new Set(), pendingClassifications = new Set();
+const records = new Map(), rows = new Map(), pendingReviews = new Set(), pendingRealtors = new Set(), pendingDuplicates = new Set(), pendingClassifications = new Set(), pendingSelections = new Set();
 const labels = {new:'НОВОЕ', liked:'Понравилось', viewed:'Просмотрено', rejected:'Не подходит'};
 const realtorLabels = {pending:'Не оценено',approved:'Одобрено',rejected:'Отбраковано'};
 let selectedSort = null, identityRevision = 0, refreshPromise = null;
 let currentUser = null, csrfToken = '', pending = false, refreshing = false, selectedFilter = 'all';
 
 function setText(node, value) {
+  if(!node)return;
   const text = String(value ?? '');
   if (node.textContent !== text) node.textContent = text;
 }
@@ -36,10 +38,10 @@ async function responseJson(response) {
 function jsonOptions(method, data) {
   return {method, headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)};
 }
-const visitUI = XataVisits.create({getItem:key=>records.get(key),getUser:()=>currentUser,
+const visitUI = ourPage ? XataVisits.create({getItem:key=>records.get(key),getUser:()=>currentUser,
   saveItem:item=>{acceptListing(item);setText(message,'Просмотр сохранён.');message.className='';},request:async(url,options)=>responseJson(await apiFetch(url,options)),
-  jsonOptions,render:renderListings,refresh:()=>refresh(true)});
-const comparisonUI = XataCompare.create({getItem:key=>records.get(key),render:renderListings});
+  jsonOptions,render:renderListings,refresh:()=>refresh(true)}) : null;
+const comparisonUI = ourPage ? XataCompare.create({getItem:key=>{const item=records.get(key);return item?.in_our_list?item:null;},render:renderListings}) : null;
 function cell(row) { const td = document.createElement('td'); row.append(td); return td; }
 function safeCianUrl(value) {
   return /^https?:\/\/([a-z0-9-]+\.)*cian\.ru(?::(?:80|443))?\/sale\/flat\/\d+\/?(?:[?#].*)?$/i.test(value || '');
@@ -87,9 +89,26 @@ function makeRow(id) {
   const duplicateCompare = document.createElement('a'); duplicateCompare.target='_blank'; duplicateCompare.rel='noopener noreferrer';
   duplicateCompare.textContent='Сравнить на ЦИАН'; duplicateBox.insertBefore(duplicateCompare,duplicateActions);
   const groupLabel=document.createElement('span');groupLabel.className='viewed-group-label';
-  const stageButton=document.createElement('button');stageButton.type='button';stageButton.className='secondary viewed-stage-toggle';
-  stageButton.addEventListener('click',()=>changeClassification(id));
-  cells[2].append(groupLabel,stageButton,title,address,propertyHistory,historyDetails,duplicateBox);
+  const stageButton=document.createElement('select');stageButton.className='viewed-stage-select';
+  for(const [value,label] of [['liked','Оставляем в запасе'],['documents','Проверка документов']]){
+    const option=document.createElement('option');option.value=value;option.textContent=label;stageButton.append(option);
+  }
+  stageButton.addEventListener('change',()=>changeClassification(id,stageButton.value==='documents'));
+  const stageCell=document.createElement('td');stageCell.className='selection-stage-cell';stageCell.append(groupLabel,stageButton);
+  const selectionButton=document.createElement('button');selectionButton.type='button';selectionButton.className='secondary selection-toggle';
+  selectionButton.addEventListener('click',()=>changeSelection(id));
+  const characteristics=document.createElement('details');characteristics.className='characteristics';
+  const characteristicsSummary=document.createElement('summary');characteristicsSummary.textContent='Характеристики';
+  const characteristicsText=document.createElement('p');characteristics.append(characteristicsSummary,characteristicsText);
+  if(ourPage){
+    characteristics.append(propertyHistory,historyDetails);
+    cells[2].append(title,address,link,selectionButton,characteristics,duplicateBox);
+    row.replaceChildren(cells[0],cells[2],cells[3],cells[12],cells[13],cells[11],stageCell);
+    cells[12].className='viewing-date-cell';cells[13].className='viewing-result-cell';
+  } else {
+    cells[2].append(title,address,selectionButton,propertyHistory,historyDetails,duplicateBox);
+    row.replaceChildren(...cells.slice(0,12));
+  }
   const coverButton = document.createElement('button'); coverButton.type='button'; coverButton.className='cover-button';
   const coverImage = document.createElement('img'); coverImage.className='listing-cover'; coverImage.loading='lazy';
   coverImage.decoding='async'; coverImage.width=110; coverImage.height=80;
@@ -98,7 +117,7 @@ function makeRow(id) {
   coverButton.addEventListener('click',()=>openCover(id));
   const compareLabel=document.createElement('label');compareLabel.className='compare-choice';
   const compareInput=document.createElement('input');compareInput.type='checkbox';compareInput.className='compare-select';
-  compareLabel.append(compareInput,document.createTextNode('В сравнение'));cells[0].append(compareLabel);
+  compareLabel.append(compareInput,document.createTextNode('В сравнение'));if(ourPage)cells[0].append(compareLabel);
   compareInput.addEventListener('change',()=>comparisonUI.toggle(id,compareInput.checked));
   const date = document.createElement('time'), clock = document.createElement('small'); cells[9].append(date, clock);
   const badge = document.createElement('span'); badge.className = 'review-label';
@@ -129,7 +148,7 @@ function makeRow(id) {
   const realtorSaving = document.createElement('small'); realtorSaving.setAttribute('aria-live','polite');
   realtorForm.append(realtorSelect,comment,saveRealtor,realtorSaving); editor.append(editorSummary,realtorForm);
   cells[11].append(realtorBadge,commentPreview,commentDetails,realtorMeta,editor);
-  const entry = {row,cells,groupLabel,stageButton,compareInput,compareLabel,returnHint,link,title,address,propertyHistory,coverButton,coverImage,coverPlaceholder,failedCover:null,failedCoverAt:0,historyDetails,historyText,duplicateCompare,duplicateBox,duplicateText,duplicateActions,
+  const entry = {row,cells,groupLabel,stageButton,selectionButton,characteristicsText,compareInput,compareLabel,returnHint,link,title,address,propertyHistory,coverButton,coverImage,coverPlaceholder,failedCover:null,failedCoverAt:0,historyDetails,historyText,duplicateCompare,duplicateBox,duplicateText,duplicateActions,
     duplicateSame,duplicateDifferent,date,clock,badge,select,meta,saving,
     realtorBadge,commentPreview,commentDetails,commentText,realtorMeta,editor,realtorSelect,comment,saveRealtor,realtorSaving,dirty:false};
   coverImage.addEventListener('error',()=>{
@@ -158,7 +177,7 @@ function renderRow(item, forceReview = false) {
   entry.realtorSelect.setAttribute('aria-label','Оценка риелтора ' + item.id);
   entry.comment.setAttribute('aria-label','Комментарий риелтора ' + item.id);
   const {row,cells,link,title,address,date,clock,badge,select,meta,saving} = entry;
-  setText(link, item.id);
+  setText(link, (ourPage?'ЦИАН ':'')+item.id);
   if (safeCianUrl(item.url)) link.href = item.url; else link.removeAttribute('href');
   setText(title, item.complex_name || item.title || 'Квартира');
   setText(address, item.address);
@@ -203,15 +222,21 @@ function renderRow(item, forceReview = false) {
   setText(clock, first ? first.toLocaleTimeString('ru-RU', {hour:'2-digit', minute:'2-digit'}) : '');
   const review = item.review_status || 'new';
   const effectiveStatus = XataReview.effectiveStatus(item);
-  const group=XataReview.viewedGroup(item),legacy=XataReview.latestCompleted(item)?.outcome==='thinking';
+  const group=ourPage?XataReview.section(item,'ours'):null,legacy=XataReview.latestCompleted(item)?.outcome==='thinking';
   row.className = 'review-' + effectiveStatus + (group?' viewed-'+group:'');
   row.dataset.viewedGroup=group||'';
-  const groupLabels={liked:'Понравилось — пока без проверки документов',documents:'Понравилось — готовимся к проверке документов',rejected:'Не понравилось'};
-  entry.groupLabel.hidden=!group&&!legacy;
-  setText(entry.groupLabel,group?groupLabels[group]:(legacy?'Думаем — группа не выбрана':''));
+  const groupLabels={planned:'К просмотру',liked:'Оставляем в запасе',documents:'Проверка документов',rejected:'Не понравилось'};
+  entry.groupLabel.hidden=!ourPage;
+  setText(entry.groupLabel,legacy?'Думаем — уточните результат':(groupLabels[group]||''));
   entry.stageButton.hidden=!['liked','documents'].includes(group)||!['admin','reviewer'].includes(currentUser?.role);
   entry.stageButton.disabled=pendingClassifications.has(id);
-  setText(entry.stageButton,group==='documents'?'Пока без проверки документов':'Готовимся к проверке документов');
+  entry.stageButton.setAttribute('aria-label','Этап отбора квартиры '+item.id);
+  if(!pendingClassifications.has(id))entry.stageButton.value=group==='documents'?'documents':'liked';
+  entry.selectionButton.hidden=!['admin','reviewer'].includes(currentUser?.role);
+  entry.selectionButton.disabled=pendingSelections.has(id);
+  setText(entry.selectionButton,ourPage?'Убрать из нашего списка':'В наш список');
+  entry.selectionButton.setAttribute('aria-label',(ourPage?'Убрать из нашего списка: квартира ':'В наш список: квартира ')+item.id);
+  setText(entry.characteristicsText,'Площадь: '+(item.area==null?'—':item.area+' м²')+'\nЭтаж: '+(item.floor||'—')+'\nМетро: '+(item.metro||'—')+'\nДо метро: '+(item.metro_time||'—'));
   row.dataset.reviewStatus = review;
   setText(badge, labels[review]);
   if (forceReview || (!pendingReviews.has(id) && document.activeElement !== select)) select.value = review;
@@ -241,40 +266,40 @@ function renderRow(item, forceReview = false) {
     entry.comment.value = item.realtor_comment || '';
   }
   setText(entry.realtorSaving, pendingRealtors.has(id) ? 'Сохраняем…' : '');
-  visitUI.renderCells(cells[12],cells[13],item);
+  visitUI?.renderCells(cells[12],cells[13],item);
   entry.compareLabel.hidden=!XataReview.comparisonEligible(item);
-  entry.compareInput.checked=comparisonUI.has(id);
+  entry.compareInput.checked=!!comparisonUI?.has(id);
   entry.compareInput.setAttribute('aria-label','В сравнение: квартира '+item.id);
   entry.returnHint.hidden=!!group||item.realtor_status!=='rejected';
   setText(entry.returnHint,'Возврат блокирует отказ риелтора. Его оценку меняет риелтор или администратор.');
-  row.hidden = XataReview.section(item)==='main' && selectedFilter !== 'all' && (selectedFilter === 'planned' || selectedFilter !== effectiveStatus);
+  row.hidden = !ourPage && XataReview.section(item,pageMode)==='main' && selectedFilter !== 'all' && (selectedFilter === 'planned' || selectedFilter !== effectiveStatus);
   return row;
 }
 function renderListings() {
-  const body=document.querySelector('#listings'),rejectedBody=document.querySelector('#rejected-listings');
-  const ordered=XataReview.ordered(records.values(),selectedSort);
-  const active=ordered.filter(item=>XataReview.section(item)==='main');
-  const rejected=ordered.filter(item=>XataReview.section(item)==='refused');
-  const destinations=new Map([['main',body],['refused',rejectedBody],
-    ...['liked','documents','rejected'].map(group=>[group,document.querySelector('#viewed-'+group+'-listings')])]);
-  const counts=XataReview.counts(active);
-  counts.planned=XataReview.agenda(ordered).length;
-  const planned=selectedFilter==='planned';
-  document.querySelector('.table-wrap').hidden=planned;
-  document.querySelector('#visit-agenda').hidden=!planned;
-  if(planned)visitUI.agenda(ordered);
-  comparisonUI.sync();
-  // Move existing property nodes between mutually exclusive bodies; never duplicate an apartment
-  // or rebuild a realtor draft when its effective status changes.
-  for(const item of ordered) {
-    const row=renderRow(item),target=destinations.get(XataReview.section(item));
+  const all=XataReview.ordered(records.values(),selectedSort);
+  const ordered=all.filter(item=>XataReview.section(item,pageMode)!==null);
+  const destinations=ourPage
+    ? new Map(['planned','liked','documents','rejected'].map(group=>[group,document.querySelector('#viewed-'+group+'-listings')]))
+    : new Map([['main',document.querySelector('#listings')],['refused',document.querySelector('#rejected-listings')]]);
+  const active=ordered.filter(item=>XataReview.section(item,pageMode)==='main');
+  const counts=ourPage?{all:ordered.length,planned:XataReview.agenda(ordered).length}:XataReview.counts(active);
+  const planned=ourPage&&selectedFilter==='planned';
+  if(ourPage){
+    document.querySelector('#viewed-section').hidden=planned;
+    document.querySelector('#visit-agenda').hidden=!planned;
+    if(planned)visitUI.agenda(ordered);
+  }
+  comparisonUI?.sync();
+  for(const item of all) {
+    const target=destinations.get(XataReview.section(item,pageMode)),key=XataReview.key(item);
+    if(!target){rows.get(key)?.row.remove();continue;}
+    const row=renderRow(item);
     if(row.parentNode!==target)target.append(row);
   }
-  if(!pendingReviews.size&&!pendingRealtors.size&&!pendingDuplicates.size&&!pendingClassifications.size&&!document.activeElement?.matches('.review-select,.realtor-select,.realtor-comment,.visit-date-input,.visit-date-picker,.visit-date-clear,.visit-date-ok')) {
+  if(!pendingReviews.size&&!pendingRealtors.size&&!pendingDuplicates.size&&!pendingClassifications.size&&!pendingSelections.size&&!document.activeElement?.matches('.review-select,.realtor-select,.realtor-comment,.visit-date-input,.visit-date-picker,.visit-date-clear,.visit-date-ok,.viewed-stage-select')) {
     for(const [section,target] of destinations) {
-      const items=ordered.filter(item=>XataReview.section(item)===section);
       let cursor=target.firstElementChild;
-      for(const item of items) {
+      for(const item of ordered.filter(item=>XataReview.section(item,pageMode)===section)) {
         const row=rows.get(XataReview.key(item)).row;
         if(row!==cursor)target.insertBefore(row,cursor);
         cursor=row.nextElementSibling;
@@ -285,16 +310,17 @@ function renderListings() {
     node.setAttribute('aria-pressed',String(node.dataset.reviewFilter===selectedFilter));
     setText(node.querySelector('span'),counts[node.dataset.reviewFilter]);
   }
-  setText(document.querySelector('#count'),active.length);
-  setText(document.querySelector('#rejected-count'),rejected.length);
-  for(const group of ['liked','documents','rejected'])setText(document.querySelector('#viewed-'+group+'-count'),ordered.filter(item=>XataReview.viewedGroup(item)===group).length);
-  setText(document.querySelector('#viewed-count'),ordered.filter(item=>XataReview.viewedGroup(item)).length);
-  const legacy=ordered.filter(item=>XataReview.latestCompleted(item)?.outcome==='thinking');
-  const warning=document.querySelector('#viewed-legacy-warning');warning.hidden=!legacy.length;
-  setText(warning,'Сохранён результат «Думаем» у '+legacy.length+' квартир. Новая группа не назначена; эти квартиры оставлены в прежнем разделе. Для классификации явно исправьте результат в существующей форме.');
+  setText(document.querySelector('#count'),ourPage?ordered.length:active.length);
+  setText(document.querySelector('#rejected-count'),ordered.length-active.length);
+  for(const group of ['planned','liked','documents','rejected'])
+    setText(document.querySelector('#viewed-'+group+'-count'),ordered.filter(item=>XataReview.section(item,pageMode)===group).length);
+  const selected=all.filter(item=>item.in_our_list).length;
+  setText(document.querySelector('#nav-ours-count'),selected);
+  setText(document.querySelector('#nav-all-count'),all.length-selected);
   const empty=document.querySelector('#empty');
-  empty.hidden=(selectedFilter==='all'?counts.all:counts[selectedFilter])>0;
-  setText(empty,active.length?'Нет объявлений с выбранным статусом.':'В основном списке пока нет объявлений.');
+  empty.hidden=ourPage?ordered.length>0:(counts[selectedFilter]||0)>0;
+  setText(empty,ourPage?'В нашем списке пока нет квартир. Выберите варианты на странице «Все объявления».':
+    active.length?'Нет объявлений с выбранным статусом.':'В основном списке пока нет объявлений.');
 }
 
 function acceptListing(item) {
@@ -303,18 +329,31 @@ function acceptListing(item) {
   const key = XataReview.key(item);
   records.set(key,XataReview.merge(records.get(key),item));
 }
-async function changeClassification(id) {
+async function changeClassification(id, documentsReady) {
   if(pendingClassifications.has(id)||!records.has(id))return;
   const item=records.get(id);
   pendingClassifications.add(id);renderRow(item);
   try {
     const saved=await responseJson(await apiFetch('/api/listings/'+encodeURIComponent(item.id)+'/viewing-classification',
-      jsonOptions('PATCH',{property_id:item.property_id,visits_version:item.visits_version,documents_ready:!item.viewing_documents_ready})));
+      jsonOptions('PATCH',{property_id:item.property_id,visits_version:item.visits_version,documents_ready:documentsReady})));
     acceptListing(saved);setText(message,'Группа просмотренной квартиры сохранена.');message.className='';
   } catch(error) {
     setText(message,error.message);message.className='error';
     await refresh(true);
   } finally {pendingClassifications.delete(id);renderListings();}
+}
+async function changeSelection(id) {
+  if(pendingSelections.has(id)||!records.has(id))return;
+  if(rows.get(id)?.dirty){
+    setText(message,'Сначала сохраните комментарий риелтора.');message.className='error';return;
+  }
+  const item=records.get(id);pendingSelections.add(id);renderRow(item);
+  try{
+    const saved=await responseJson(await apiFetch('/api/listings/'+encodeURIComponent(item.id)+'/selection',
+      jsonOptions('PATCH',{property_id:item.property_id,selection_version:item.selection_version,selected:!item.in_our_list})));
+    acceptListing(saved);setText(message,saved.in_our_list?'Квартира перенесена на страницу «Наши квартиры».':'Квартира возвращена на страницу «Все объявления».');message.className='';
+  }catch(error){setText(message,error.message);message.className='error';await refresh(true);}
+  finally{pendingSelections.delete(id);renderListings();}
 }
 async function changeReview(id, nextStatus) {
   if (pendingReviews.has(id) || !records.has(id)) return;
@@ -401,7 +440,7 @@ async function refreshState() {
       if (!records.has(key)) {entry.row.remove(); rows.delete(key);}
     }
     renderListings();
-    if (currentUser.role !== 'admin') return;
+    if (currentUser.role !== 'admin' || ourPage) return;
     const browser = data.browser || {};
     const states = {authorized:'Авторизован', login_required:'Требуется вход', confirmation_required:'Требуется подтверждение/CAPTCHA', error:'Ошибка browser collector'};
     setText(document.querySelector('#browser-state'), states[browser.status] || browser.message || 'Состояние неизвестно');
@@ -415,7 +454,7 @@ async function refreshState() {
   } catch(error) { setText(message, error.message); message.className = 'error'; }
   finally { refreshing = false; }
 }
-form.addEventListener('submit', async event => {
+form?.addEventListener('submit', async event => {
   event.preventDefault(); pending = true; button.disabled = true;
   try {
     await responseJson(await apiFetch('/api/browser/collect', jsonOptions('POST', {})));
@@ -424,7 +463,7 @@ form.addEventListener('submit', async event => {
 });
 let browserRefreshPending = false;
 async function refreshBrowser() {
-  if (browserRefreshPending || currentUser?.role !== 'admin') return;
+  if (!form || browserRefreshPending || currentUser?.role !== 'admin') return;
   browserRefreshPending = true;
   try {
     const data = await responseJson(await apiFetch('/api/browser/status'));
@@ -448,8 +487,8 @@ function importMessage(text, error = false) {
   importStatus.textContent = text;
   importStatus.className = error ? 'error' : '';
 }
-importSelect.addEventListener('click', () => fileInput.click());
-fileInput.addEventListener('change', async () => {
+importSelect?.addEventListener('click', () => fileInput.click());
+fileInput?.addEventListener('change', async () => {
   const file = fileInput.files[0];
   if (!file) return;
   const oldToken = importToken;
@@ -473,12 +512,12 @@ fileInput.addEventListener('change', async () => {
   } catch (error) { importMessage(error.message, true); }
   finally { importSelect.disabled = false; fileInput.value = ''; }
 });
-importCancel.addEventListener('click', async () => {
+importCancel?.addEventListener('click', async () => {
   const token = importToken; importToken = null; previewPanel.hidden = true;
   importMessage('Импорт отменён. Объявления не изменены.');
   if (token) { try { await responseJson(await apiFetch('/api/import/cancel', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token})})); } catch(error) { importMessage('Объявления не изменены. Не удалось удалить предпросмотр: ' + error.message, true); } }
 });
-importConfirm.addEventListener('click', async () => {
+importConfirm?.addEventListener('click', async () => {
   if (!importToken) return;
   importConfirm.disabled = true; importSelect.disabled = true; importCancel.disabled = true;
   try {

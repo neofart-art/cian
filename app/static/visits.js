@@ -13,7 +13,7 @@ globalThis.XataVisits = {create({getItem,getUser,saveItem,request,jsonOptions,re
   function button(text,action) {const b=el('button',text,'secondary compact');b.type='button';b.addEventListener('click',action);return b;}
   const dialog=document.querySelector('#visit-dialog'),form=document.querySelector('#visit-form');
   const date=document.querySelector('#visit-date'),state=document.querySelector('#visit-state'),outcome=document.querySelector('#visit-outcome');
-  const preparation=document.querySelector('#visit-preparation'),comment=document.querySelector('#visit-comment');
+  const comment=document.querySelector('#visit-comment');
   const error=document.querySelector('#visit-error'),submit=document.querySelector('#visit-save');
   const recordChoice=document.querySelector('#visit-record-choice');
   const reasonFields=document.querySelector('#visit-reasons'),outcomeFields=document.querySelector('#visit-outcome-group');
@@ -48,14 +48,14 @@ globalThis.XataVisits = {create({getItem,getUser,saveItem,request,jsonOptions,re
     const item=getItem(key);if(!item||!canEdit()||saving)return;
     const actualTime=visit?.completed_at||new Date().toISOString();
     editing={key,listingId:item.id,propertyId:item.property_id,id:visit?.id,version:visit?.version||0,
-      scheduledAt:visit?.scheduled_at||null,completedAt:actualTime,requestId:visit?null:crypto.randomUUID()};
+      preparation:visit?.preparation||'',scheduledAt:visit?.scheduled_at||null,completedAt:actualTime,requestId:visit?null:crypto.randomUUID()};
     document.querySelector('#visit-title').textContent=visit?'Просмотр квартиры':'Новый просмотр';
     document.querySelector('#visit-address').textContent=item.address||item.title||'Квартира';
     state.value=mode||visit?.status||'planned';shownState=state.value;
     draftDates={planned:localDate(visit?.scheduled_at),completed:localDate(actualTime)};
     date.value=draftDates[shownState==='completed'?'completed':'planned'];
     for(const option of state.options)option.disabled=visit?.status==='completed'&&option.value!=='completed';
-    outcome.value=visit?.outcome||'';preparation.value=visit?.preparation||'';comment.value=visit?.comment||'';
+    outcome.value=visit?.outcome||'';comment.value=visit?.comment||'';
     for(const input of reasonFields.querySelectorAll('input'))input.checked=(visit?.rejection_reasons||[]).includes(input.value);
     recordChoice.replaceChildren();
     for(const entry of item.visits||[]) {
@@ -84,7 +84,7 @@ globalThis.XataVisits = {create({getItem,getUser,saveItem,request,jsonOptions,re
     const scheduled=done?editing.scheduledAt:(date.value===localDate(editing.scheduledAt)?editing.scheduledAt:entered);
     const data={property_id:editing.propertyId,version:editing.version,status:state.value,
       scheduled_at:scheduled,completed_at:actual,outcome:done?outcome.value:null,
-      preparation:preparation.value,comment:comment.value,
+      preparation:editing.preparation,comment:comment.value,
       rejection_reasons:done&&outcome.value==='rejected'?[...reasonFields.querySelectorAll('input:checked')].map(n=>n.value):[]};
     if(!editing.id)data.request_id=editing.requestId;
     saving=true;error.textContent='';
@@ -110,10 +110,6 @@ globalThis.XataVisits = {create({getItem,getUser,saveItem,request,jsonOptions,re
     box.append(el('strong',format(visit.status==='completed'?visit.completed_at:visit.scheduled_at)),
       el('div',outcomes[visit.outcome]||states[visit.status],'visit-state'));
     if(XataReview.overdue(visit))box.append(el('small','Укажите результат просмотра','visit-overdue'));
-    if(visit.preparation) {
-      if(agenda)box.append(el('p','Что проверить / спросить: '+visit.preparation,'visit-preparation'));
-      else {const d=el('details');d.append(el('summary','Что проверить / спросить'),el('p',visit.preparation));box.append(d);}
-    }
     if(visit.comment) {const d=el('details');d.append(el('summary','После просмотра'),el('p',visit.comment));box.append(d);}
     const labels=(visit.rejection_reasons||[]).map(value=>reasons[value]).filter(Boolean);
     if(labels.length)box.append(el('p','Причины отказа: '+labels.join(', '),'visit-rejection-reasons'));
