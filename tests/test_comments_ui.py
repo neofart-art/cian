@@ -90,7 +90,7 @@ def test_shared_comments_mobile_cards_and_no_duplicate_forms(two_page_app,engine
                 before=len(writes);await page.evaluate('refresh(true)')
                 assert await field.evaluate('e=>e===document.activeElement&&e.selectionStart===7')
                 await expect(field).to_have_value(draft)
-                await page.set_viewport_size({'width':1024,'height':430})
+                await page.set_viewport_size({'width':900,'height':width})
                 await expect(field).to_have_value(draft)
                 await fits()
                 await page.set_viewport_size({'width':width,'height':900})
