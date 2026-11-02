@@ -53,6 +53,7 @@ def test_shared_comments_mobile_cards_and_no_duplicate_forms(two_page_app,engine
                 await expect(page.locator('#nav-all-count')).to_have_text('9')
                 await expect(page.locator('#nav-ours-count')).to_have_text('7')
                 await expect(page.locator('#count')).to_have_text('9')
+                await expect(page.locator('[data-review-filter="all"] span')).to_have_text('9')
                 row=page.locator('tr[data-listing-id="9500"]')
                 await expect(row.locator('.membership-label')).to_be_visible()
                 assert await row.locator('td').first.evaluate('e=>getComputedStyle(e).backgroundColor')=='rgb(233, 243, 252)'

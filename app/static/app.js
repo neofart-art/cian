@@ -269,6 +269,7 @@ function renderListings() {
     : new Map([['main',document.querySelector('#listings')],['refused',document.querySelector('#rejected-listings')]]);
   const active=ordered.filter(item=>XataReview.section(item,pageMode)==='main');
   const counts=ourPage?{all:ordered.length,planned:XataReview.agenda(ordered).length}:XataReview.counts(active);
+  if(!ourPage)counts.all=ordered.length; // Includes apartments in the collapsed rejection section.
   const planned=ourPage&&selectedFilter==='planned';
   if(ourPage){
     document.querySelector('#viewed-section').hidden=planned;
