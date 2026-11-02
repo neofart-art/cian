@@ -367,3 +367,12 @@ body[data-page] :is(.visit-record,.visit-record strong,.visit-history>summary){f
   body[data-page] .visit-calendar button{min-height:44px;height:44px;font-size:16px}
   body[data-page] .visit-calendar-head button{width:44px;flex-basis:44px}
 }
+
+/* Explicit wrapping prevents the desktop date text shrinking behind its icon. */
+body[data-page] .visit-date-editor{width:100%;flex-wrap:wrap;gap:6px}
+body[data-page] .visit-date-control{flex:0 0 136px;min-width:136px;width:136px;max-width:136px}
+body[data-page] .visit-date-actions{flex:1 1 136px;width:auto;flex-direction:row;gap:6px}
+body[data-page] .visit-date-actions button{flex:1;min-width:64px}
+@media(max-width:900px){
+ body[data-page] .visit-date-control{flex:1 1 160px;min-width:150px;max-width:200px;width:160px}
+}

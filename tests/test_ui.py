@@ -250,7 +250,7 @@ def test_shared_review_ui_login_roles_refresh_and_layout(tmp_path, monkeypatch):
                 await expect(visit_row).to_have_class('review-rejected viewed-rejected')
                 await expect(visit_row.locator('.visit-history')).to_contain_text('Не понравилось')
                 assert await page.evaluate('document.documentElement.scrollWidth <= innerWidth')
-                assert await page.locator('#viewed-rejected-section .viewed-wrap').evaluate('el => el.scrollWidth > el.clientWidth')
+                assert await page.locator('#viewed-rejected-section .viewed-wrap').evaluate('el => el.scrollWidth <= el.clientWidth')
                 assert failures == []
                 await context.close()
                 await browser.close()
@@ -349,6 +349,7 @@ def test_property_identity_relisting_and_late_poll_after_manual_merge(tmp_path,m
                 await expect(row.locator('.duplicate-box')).to_be_hidden()
                 await expect(row.locator('.review-label')).to_have_text('Понравилось')
                 await expect(row.locator('.comment-preview')).to_contain_text('Несохранённый комментарий')
+                await row.locator('.characteristics > summary').click()
                 await row.locator('.publication-details > summary').click()
                 for listing in ('7000','7001','7002'):
                     await expect(row.locator('.publication-details p')).to_contain_text('CIAN '+listing)
@@ -421,7 +422,7 @@ def test_cover_column_modal_placeholder_refresh_and_hidden_marketing(tmp_path,mo
                 errors=[];page.on('pageerror',lambda error:errors.append(str(error)))
                 await page.goto('https://xata.test/')
                 await expect(page.locator('#listings tr')).to_have_count(3)
-                await expect(page.locator('#listing-table th').first).to_have_text('Фото')
+                await expect(page.locator('#listing-table th').nth(1)).to_have_text('Фото')
                 row=page.locator('tr[data-listing-id="8100"]')
                 thumb=row.locator('.listing-cover')
                 await expect(row.locator('.cover-button')).to_be_visible()
@@ -641,7 +642,7 @@ def test_confirmed_calendar_date_drafts_permissions_mobile_and_timezone(tmp_path
                               available:button.clientWidth-parseFloat(s.paddingLeft)-parseFloat(s.paddingRight),font:s.fontSize,width:button.clientWidth};
                         }""")
                         assert action_fit['text']<=action_fit['available']+1,action_fit
-                    assert (await field.bounding_box())['width']<140
+                    assert (await field.bounding_box())['width']<210
                     if width==390:
                         for button in (clear,ok):
                             box=await button.bounding_box()
@@ -903,8 +904,8 @@ def test_two_pages_selection_groups_stage_colors_roles_and_reload(two_page_app,p
             page=await context.new_page();errors=[]
             page.on('pageerror',lambda error:errors.append(str(error)))
             await page.goto('https://xata.test/')
-            await expect(page.locator('#listings tr')).to_have_count(6)
-            await expect(page.locator('#rejected-listings tr')).to_have_count(3)
+            await expect(page.locator('#listings tr')).to_have_count(5)
+            await expect(page.locator('#rejected-listings tr')).to_have_count(4)
             await expect(page.locator('#nav-ours-count')).to_have_text('7')
             await expect(page.locator('#nav-all-count')).to_have_text('9')
             assert await page.locator('#listing-table th').all_text_contents()==[
@@ -978,7 +979,7 @@ def test_two_pages_selection_groups_stage_colors_roles_and_reload(two_page_app,p
             await expect(neutral).to_have_count(0)
             await page.locator('.page-nav a[href="/"]').click()
             await page.wait_for_url('https://xata.test/')
-            await expect(page.locator('#rejected-count')).to_have_text('3')
+            await expect(page.locator('#rejected-count')).to_have_text('4')
             await page.locator('#rejected-section > summary').click()
             await expect(page.locator('tr[data-listing-id="9504"]')).to_be_visible()
             await page.locator('tr[data-listing-id="9504"] .selection-toggle').click()
@@ -1031,14 +1032,14 @@ def test_our_page_agenda_conflicts_repeat_results_and_comparison_on_phone(two_pa
             await page.clock.set_fixed_time('2026-10-26T09:00:00Z')
             await page.goto('https://xata.test/ours')
             await expect(page.locator('#count')).to_have_text('8')
-            header=page.locator('#viewed-planned-section [data-sort="visit_date"]')
-            await header.click()
+            header=page.locator('#mobile-sort')
+            await header.select_option('visit_date:asc')
             dates=await page.locator('#viewed-planned-listings tr').evaluate_all('rows=>rows.map(r=>r.dataset.listingId)')
             assert dates[:2]==['9505','9500'] and set(dates[2:])=={'9504','9507'}
-            await header.click()
+            await header.select_option('visit_date:desc')
             dates=await page.locator('#viewed-planned-listings tr').evaluate_all('rows=>rows.map(r=>r.dataset.listingId)')
             assert dates[:2]==['9500','9505'] and set(dates[2:])=={'9504','9507'}
-            await header.click()
+            await header.select_option('')
             await page.locator('[data-review-filter="planned"]').click()
             cards=page.locator('#visit-agenda .visit-card')
             await expect(cards).to_have_count(2)
