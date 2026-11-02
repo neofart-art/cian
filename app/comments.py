@@ -6,8 +6,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 class FamilyCommentInput(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    property_id: int = Field(ge=1)
-    family_comment_version: int = Field(ge=0)
+    property_id: int = Field(ge=1, strict=True)
+    family_comment_version: int = Field(ge=0, strict=True)
     text: str = Field(max_length=20000)
 
     @field_validator('text')

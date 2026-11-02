@@ -654,10 +654,10 @@ def test_confirmed_calendar_date_drafts_permissions_mobile_and_timezone(tmp_path
                 await second.get_by_role('button',name='ОК',exact=True).click()
                 await expect(second.locator('.visit-date-status')).to_have_text('Дата сохранена.')
                 await expect(second.locator('.viewing-date-cell').locator('.visit-overdue')).to_be_visible()
-                header=page.locator('#viewed-planned-section [data-sort="visit_date"]')
-                await header.click()
+                header=page.locator('#mobile-sort')
+                await header.select_option('visit_date:asc')
                 assert await page.locator('#viewed-planned-listings tr').evaluate_all('rows=>rows.map(r=>r.dataset.listingId)')==['9301','9300']
-                await header.click()
+                await header.select_option('visit_date:desc')
                 assert await page.locator('#viewed-planned-listings tr').evaluate_all('rows=>rows.map(r=>r.dataset.listingId)')==['9300','9301']
                 # Buyers have a DD.MM.YYYY value but no inline editor/actions.
                 sign_in(client,'buyer','password-123')

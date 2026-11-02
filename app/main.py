@@ -480,8 +480,8 @@ def review_listing(listing_id: str, data: Review, user=Depends(auth)):
 
 class RealtorReview(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    property_id: int = Field(ge=1)
-    realtor_version: int = Field(ge=0)
+    property_id: int = Field(ge=1, strict=True)
+    realtor_version: int = Field(ge=0, strict=True)
     status: Literal['pending', 'approved', 'rejected']
     comment: str = Field(default='', max_length=2000)
 

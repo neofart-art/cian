@@ -49,6 +49,9 @@ jobs:
         env:
           UI_SCREENSHOT_DIR: artifacts/ui-screenshots
         run: RUN_BROWSER_TESTS=1 python -m pytest -q --maxfail=3 tests/test_browser_dom.py tests/test_ui.py tests/test_comments_ui.py
+      - name: Prepare readable screenshot preview
+        if: always()
+        run: python tests/screenshot_contact.py
       - name: Upload desktop and mobile browser screenshots
         if: always()
         uses: actions/upload-artifact@v4
