@@ -110,7 +110,7 @@ def merge(conn,source,target,now):
     conn.execute('UPDATE property_comment_history SET property_id=? WHERE property_id=?',(target,source))
     left,right=b['family_comment'],a['family_comment']
     text=left or right
-    if left and right and left!=right:
+    if left and right:
         def labelled(prop,value):
             return 'Квартира ЦИАН '+str(prop['current_listing_id'] or '—')+' (property '+str(prop['id'])+'):\n'+value
         text=labelled(b,left)+'\n\n'+labelled(a,right)
@@ -118,7 +118,7 @@ def merge(conn,source,target,now):
     owner=b if left else a
     conn.execute("""UPDATE properties SET family_comment=?,family_comment_version=?,
         family_comment_updated_at=?,family_comment_updated_by=? WHERE id=?""",
-        (text,version,now if left and right and left!=right else owner['family_comment_updated_at'],
-         None if left and right and left!=right else owner['family_comment_updated_by'],target))
-    if left and right and left!=right:
+        (text,version,now if left and right else owner['family_comment_updated_at'],
+         None if left and right else owner['family_comment_updated_by'],target))
+    if left and right:
         record(conn,target,'family',text,now,None,version,b['current_listing_id'])

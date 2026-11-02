@@ -37,7 +37,7 @@ def test_shared_comments_mobile_cards_and_no_duplicate_forms(two_page_app,engine
             context=await browser.new_context(viewport={'width':width,'height':900},has_touch=width<900,
                 is_mobile=width<900,device_scale_factor=1,timezone_id='America/Los_Angeles')
             await context.route('**/*',bridge)
-            page=await context.new_page();page.on('pageerror',lambda e:failures.append(str(e)))
+            page=await context.new_page();page.set_default_timeout(8000);page.on('pageerror',lambda e:failures.append(str(e)))
             async def fits():
                 assert await page.evaluate('document.documentElement.scrollWidth<=innerWidth'),await page.evaluate('({width:innerWidth,scroll:document.documentElement.scrollWidth})')
                 if width<=900:
@@ -80,8 +80,9 @@ def test_shared_comments_mobile_cards_and_no_duplicate_forms(two_page_app,engine
                 await expect(row.locator('.family-comment')).to_be_hidden()
                 await row.locator('.family-edit').click()
                 field=row.locator('.family-comment')
-                draft='<b>Наш выбор</b> — '+('длинный комментарий ' * 18)+'\nСомнения по документам.'
+                draft='<b>Наш выбор</b> — '+('длинный комментарий ' * 18).rstrip()+'\nСомнения по документам.'
                 await field.fill(draft)
+                draft=await field.input_value()  # Compare refresh with the browser's actual input.
                 await field.evaluate('e=>{e.focus();e.setSelectionRange(7,7)}')
                 before=len(writes);await page.evaluate('refresh(true)')
                 assert await field.evaluate('e=>e===document.activeElement&&e.selectionStart===7')
@@ -173,6 +174,9 @@ def test_shared_comments_mobile_cards_and_no_duplicate_forms(two_page_app,engine
                 await expect(page.locator('.visit-calendar:visible')).to_have_count(1)
                 await fits()
                 assert failures==[]
+            except BaseException:
+                await shot('failure',False)
+                raise
             finally:
                 if failures:await shot('page-errors',False)
                 await context.close();await browser.close()

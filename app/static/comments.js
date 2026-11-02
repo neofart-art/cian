@@ -77,9 +77,12 @@ function create({kind,getItem,getUser,request,jsonOptions,accept,refresh,render}
     const canEdit=family?['admin','reviewer'].includes(getUser()?.role):['admin','realtor'].includes(getUser()?.role);
     s.display.hidden=s.editing;s.form.hidden=!s.editing;
     text(s.body,value||'—');s.body.classList.toggle('comment-collapsed',!s.expanded);
-    s.more.hidden=value.length<180;text(s.more,s.expanded?'Свернуть':'Читать полностью');
+    const measure=()=>{s.more.hidden=!value||(!s.expanded&&s.body.scrollHeight<=s.body.clientHeight+1);};
+    text(s.more,s.expanded?'Свернуть':'Читать полностью');
+    requestAnimationFrame(measure);
+    if(!s.resize&&typeof ResizeObserver!=='undefined'){s.resize=new ResizeObserver(()=>{if(!s.editing){const v=getItem(key)?.[family?'family_comment':'realtor_comment']||'';s.more.hidden=!v||(!s.expanded&&s.body.scrollHeight<=s.body.clientHeight+1);}});s.resize.observe(s.body);}
     const date=item[family?'family_comment_updated_at':'realtor_updated_at'];
-    const author=item[family?'family_comment_updated_by_name':'realtor_updated_by_name']||item.realtor_updated_by_username;
+    const author=family?item.family_comment_updated_by_name:(item.realtor_updated_by_name||item.realtor_updated_by_username);
     text(s.meta,date?stamp(author,date):'');s.meta.hidden=!date;
     const status=item.realtor_status||'pending';
     text(s.badge,status==='rejected'&&item.in_our_list?'Отбраковано риелтором':({pending:'Не оценено',approved:'Одобрено',rejected:'Отбраковано'}[status]));

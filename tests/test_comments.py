@@ -174,3 +174,39 @@ def test_additive_migration_preserves_vendor_schema_sessions_and_is_idempotent(m
         assert conn.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
         assert conn.execute('PRAGMA foreign_key_check').fetchone() is None
     assert admin.get('/api/auth/me').status_code==200
+
+
+def test_previous_app_reopens_copy_without_losing_new_comments_or_sessions(multi_app,tmp_path):
+    import os
+    import sqlite3
+    import subprocess
+    import sys
+    from pathlib import Path
+    root=os.getenv('XATA_OLD_ROOT')
+    if not root:
+        pytest.skip('CI prepares immutable previous app checkout')
+    main,admin=multi_app
+    choose(admin,current(admin))
+    save(admin,current(admin),'Новое поле — сохранить при откате')
+    destination=tmp_path/'rollback-copy';destination.mkdir()
+    with main.database() as source,sqlite3.connect(destination/'xata.sqlite3') as copy:
+        source.backup(copy)
+    code="""
+import sys,sqlite3
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+from app import main
+assert str(Path(main.__file__).resolve()).startswith(sys.argv[1])
+with main.database() as db:
+    row=db.execute("SELECT family_comment,family_comment_version FROM properties WHERE id=(SELECT property_id FROM listings WHERE id='123')").fetchone()
+    assert row['family_comment']=='Новое поле — сохранить при откате' and row['family_comment_version']==1
+    assert db.execute('SELECT count(*) FROM property_comment_history').fetchone()[0]==1
+    assert db.execute('SELECT count(*) FROM sessions').fetchone()[0]>0
+    assert db.execute('PRAGMA foreign_key_check').fetchone() is None
+    assert db.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
+main.covers.close()
+"""
+    result=subprocess.run([sys.executable,'-c',code,str(Path(root).resolve())],
+        env={**os.environ,'DATA_DIR':str(destination)},capture_output=True,text=True,timeout=30)
+    assert result.returncode==0,result.stderr
+    assert current(admin)['family_comment']=='Новое поле — сохранить при откате'
