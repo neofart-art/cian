@@ -85,7 +85,7 @@ version. Индекс property_comment_history_owner(property_id,id).
 Полный XATA checks включает старые regression tests, новые API/SQLite tests,
 Node tests, Chromium UI и WebKit UI. Новые UI-сценарии идут без сети к ЦИАН
 и другим внешним сервисам через настоящий FastAPI TestClient:
-360, 390, 430, 768, 1440 px; смена ориентации/ширины с открытым черновиком;
+360, 390, 430, 768, 1440, 1920 px; смена ориентации/ширины с открытым черновиком;
 права, конфликты и 503, очистка/отмена, обе страницы и счётчики,
 характеристики, календарь и сравнение.
 
@@ -204,3 +204,32 @@ docker compose -p xata ps app
 семейных комментариев и их происхождения. Для исправления повреждённой БД
 нужен отдельный план восстановления/слияния текущих данных; автоматического
 отката схемы или восстановления устаревшего dump здесь нет.
+
+## Изменённые файлы
+
+- app/main.py
+- app/migrations.py
+- app/static/app.js
+- app/static/style.css
+- app/static/our-listings.html
+- .github/workflows/xata-checks.yml
+- app/static/index.html
+- app/static/all-listings.html
+- app/static/review-state.js
+- tests/test_our_list.py
+- tests/helpers.py
+- tests/test_ui.py
+- app/property_match.py
+- README.md
+- tests/review_state.test.cjs
+- app/comments.py
+- app/static/comments.js
+- tests/test_phase2.py
+- tests/test_phase3.py
+- tests/test_phase3_regressions.py
+- tests/test_viewed_groups.py
+- tests/test_viewings.py
+- tests/test_comments.py
+- tests/test_comments_ui.py
+- docs/XATA_UI_COMMENTS.md
+- tests/screenshot_contact.py

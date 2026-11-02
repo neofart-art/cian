@@ -5,7 +5,7 @@ from pathlib import Path
 from PIL import Image,ImageDraw,ImageOps
 
 root=Path(os.getenv('UI_SCREENSHOT_DIR','artifacts/ui-screenshots'))
-names=['chromium-1440-all','chromium-1440-ours','chromium-390-all','chromium-390-ours','chromium-390-comment-editor']
+names=['chromium-1920-all','chromium-1920-ours','chromium-390-all','chromium-390-ours','chromium-390-comment-editor']
 if not all((root/(name+'.png')).exists() for name in names):
     print('Screenshot preview not yet complete')
 else:

@@ -13,7 +13,7 @@ pytestmark=pytest.mark.skipif(os.getenv('RUN_BROWSER_TESTS')!='1',reason='real b
 
 
 @pytest.mark.parametrize('engine',['chromium','webkit'])
-@pytest.mark.parametrize('width',[360,390,430,768,1440])
+@pytest.mark.parametrize('width',[360,390,430,768,1440,1920])
 def test_shared_comments_mobile_cards_and_no_duplicate_forms(two_page_app,engine,width):
     main,client,current=two_page_app
     async def scenario():
@@ -40,7 +40,7 @@ def test_shared_comments_mobile_cards_and_no_duplicate_forms(two_page_app,engine
             page=await context.new_page();page.set_default_timeout(8000);page.on('pageerror',lambda e:failures.append(str(e)))
             async def fits():
                 assert await page.evaluate('document.documentElement.scrollWidth<=innerWidth'),await page.evaluate('({width:innerWidth,scroll:document.documentElement.scrollWidth})')
-                if width<=900:
+                if page.viewport_size['width']<=900:
                     assert await page.locator('#mobile-sort').is_visible()
                     assert await page.locator('table:has(tbody tr[data-property-id])').first.evaluate('e=>getComputedStyle(e).display')=='block'
             async def shot(name,full=True):
@@ -76,6 +76,9 @@ def test_shared_comments_mobile_cards_and_no_duplicate_forms(two_page_app,engine
                 assert await page.locator('tr[data-listing-id="9500"]').count()==1
                 assert await page.locator('.viewed-table').first.locator('th').all_text_contents()==[
                     'Риелтор / юрист','Фото','Квартира','Цена','Дата просмотра','Результат просмотра','Наш комментарий','Этап отбора']
+                if width>900:
+                    assert (await row.locator('.viewing-result-cell button').first.bounding_box())['width']>=140
+                    assert (await row.locator('.selection-stage-cell').bounding_box())['width']>=210
                 assert await row.locator('.family-comment').count()==1
                 await expect(row.locator('.family-comment')).to_be_hidden()
                 await row.locator('.family-edit').click()
@@ -89,7 +92,9 @@ def test_shared_comments_mobile_cards_and_no_duplicate_forms(two_page_app,engine
                 await expect(field).to_have_value(draft)
                 await page.set_viewport_size({'width':1024,'height':430})
                 await expect(field).to_have_value(draft)
+                await fits()
                 await page.set_viewport_size({'width':width,'height':900})
+                await fits()
                 assert len(writes)==before
                 fail_once=True
                 await row.locator('.family-editor .comment-save').click()

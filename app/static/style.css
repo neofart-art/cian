@@ -390,3 +390,28 @@ body[data-page] .visit-date-actions button{min-width:80px}
  body[data-page] #viewed-section .viewed-table tr.viewed-documents{border-left:5px solid #4c8951}
  body[data-page] #viewed-section .viewed-table tr.viewed-rejected{border-left:5px solid #bd635c}
 }
+
+/* Readable desktop columns: scroll the table instead of crushing controls. */
+@media(min-width:901px){
+ body[data-page=ours] #viewed-section table.viewed-table{min-width:1600px!important}
+ body[data-page=all] .results :is(#listing-table,#rejected-table){min-width:1560px!important}
+ body[data-page=ours] #viewed-section table.viewed-table th:nth-child(1){width:200px}
+ body[data-page=ours] #viewed-section table.viewed-table th:nth-child(2){width:124px}
+ body[data-page=ours] #viewed-section table.viewed-table th:nth-child(3){width:240px}
+ body[data-page=ours] #viewed-section table.viewed-table th:nth-child(4){width:140px}
+ body[data-page=ours] #viewed-section table.viewed-table th:nth-child(5){width:202px}
+ body[data-page=ours] #viewed-section table.viewed-table th:nth-child(6){width:180px}
+ body[data-page=ours] #viewed-section table.viewed-table th:nth-child(7){width:240px}
+ body[data-page=ours] #viewed-section table.viewed-table th:nth-child(8){width:230px}
+ body[data-page=all] .results :is(#listing-table,#rejected-table) th:nth-child(1){width:200px}
+ body[data-page=all] .results :is(#listing-table,#rejected-table) th:nth-child(2){width:124px}
+ body[data-page=all] .results :is(#listing-table,#rejected-table) th:nth-child(3){width:110px}
+ body[data-page=all] .results :is(#listing-table,#rejected-table) th:nth-child(4){width:250px}
+ body[data-page=all] .results :is(#listing-table,#rejected-table) th:nth-child(5){width:125px}
+ body[data-page=all] .results :is(#listing-table,#rejected-table) th:nth-child(6){width:150px}
+ body[data-page=all] .results :is(#listing-table,#rejected-table) th:nth-child(7){width:100px}
+ body[data-page=all] .results :is(#listing-table,#rejected-table) th:nth-child(8){width:75px}
+ body[data-page=all] .results :is(#listing-table,#rejected-table) th:nth-child(9){width:130px}
+ body[data-page=all] .results :is(#listing-table,#rejected-table) th:nth-child(10){width:120px}
+ body[data-page=all] .results :is(#listing-table,#rejected-table) th:nth-child(11){width:150px}
+}
