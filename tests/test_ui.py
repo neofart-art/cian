@@ -471,10 +471,11 @@ def test_cover_column_modal_placeholder_refresh_and_hidden_marketing(tmp_path,mo
                 await expect(page.locator('tr[data-listing-id="8102"] img')).not_to_have_js_property('naturalWidth',0)
                 assert await page.locator('tr[data-listing-id="8102"] img').get_attribute('src')==broken_src
                 assert 'NEVER_SHOW_MARKETING' not in await page.locator('body').inner_text()
-                assert await page.locator('.table-wrap').evaluate('el=>el.scrollWidth<=el.clientWidth')
+                assert await page.locator('.table-wrap').evaluate('el=>getComputedStyle(el).overflowX===\'auto\'')
                 assert await page.evaluate('document.documentElement.scrollWidth<=innerWidth')
                 await page.set_viewport_size({'width':390,'height':844})
                 assert await page.evaluate('document.documentElement.scrollWidth<=innerWidth')
+                assert await page.locator('.table-wrap').evaluate('el=>el.scrollWidth<=el.clientWidth')
                 await expect(row.locator('.cover-button')).to_be_visible()
                 assert errors==[]
                 await context.close();await browser.close()
