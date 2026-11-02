@@ -4,7 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 from openpyxl import load_workbook
 
-from tests.helpers import sign_in
+from tests.helpers import sign_in, post_realtor
 from tests.test_multiuser import multi_app, reviewer_client
 from tests.test_phase3 import sample
 
@@ -28,7 +28,7 @@ def create(admin, item=None, **changes):
 def test_planning_rescheduling_cancelling_preserves_decisions_and_history(multi_app):
     main, admin = multi_app
     admin.post('/api/listings/123/review',json={'status':'liked'})
-    admin.post('/api/listings/123/realtor-review',json={'status':'rejected','comment':'Документы'})
+    post_realtor(admin,'/api/listings/123/realtor-review',json={'status':'rejected','comment':'Документы'})
     item = create(admin)
     assert item['review_status'] == 'liked' and item['realtor_status'] == 'rejected'
     visit = item['visits'][0]

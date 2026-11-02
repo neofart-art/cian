@@ -7,7 +7,7 @@ from urllib.parse import urlsplit
 
 import pytest
 from fastapi.testclient import TestClient
-from tests.helpers import sign_in
+from tests.helpers import sign_in, post_realtor
 
 pytestmark = pytest.mark.skipif(os.getenv('RUN_BROWSER_TESTS') != '1', reason='Chromium UI tests opt in')
 
@@ -87,19 +87,20 @@ def test_shared_review_ui_login_roles_refresh_and_layout(tmp_path, monkeypatch):
                 await expect(page.locator('#identity')).to_contain_text('Риелтор')
                 assert await page.locator('[data-admin]:visible').count() == 0
                 assert await page.locator('#listing-table th').all_text_contents() == [
-                    'Фото','№ ЦИАН','ЖК / адрес','Цена','Ипотека / мес.','Площадь','Этаж','Метро','До метро','Добавлено','Статус','Риелтор']
-                assert await page.locator('.table-wrap').evaluate('el => el.scrollWidth <= el.clientWidth')
+                    'Риелтор','Фото','Номер ЦИАН / ссылка','Объект / адрес','Цена','Ипотека / мес.','Площадь','Этаж','Метро','Добавлено','Семейная оценка']
+                assert await page.locator('.table-wrap').evaluate('el => getComputedStyle(el).overflowX === \'auto\'')
                 assert await page.evaluate('document.documentElement.scrollWidth <= innerWidth')
                 await expect(page.locator('#last-sync')).to_contain_text('16.10.2026')
                 assert await page.locator('#price,#metro').count() == 0
                 await expect(page.locator('#criteria-price')).to_have_text('Бюджет до 14,5 млн ₽')
                 await expect(page.locator('#criteria-metro')).to_contain_text('20 минут')
                 row = page.locator('tr[data-listing-id="123"]')
-                link = row.locator('td').nth(1).locator('a')
+                link = row.locator('.listing-col-1 a')
                 assert await link.text_content() == '123'
                 assert await link.get_attribute('target') == '_blank'
                 assert await link.get_attribute('rel') == 'noopener noreferrer'
                 stale_state = client.get('/api/state').json()
+                await row.locator('.characteristics').evaluate('el => {el.open=true}')
                 await row.locator('.publication-details').evaluate('el => {el.open=true}')
                 await page.evaluate('window.savedRow = document.querySelector(\'tr[data-listing-id="123"]\')')
                 await row.locator('.review-select').select_option('viewed')
@@ -138,13 +139,13 @@ def test_shared_review_ui_login_roles_refresh_and_layout(tmp_path, monkeypatch):
                 await expect(row.locator('.review-select')).to_be_hidden()
                 assert await page.locator('[data-admin]:visible').count() == 0
                 stale_state = client.get('/api/state').json()
-                await row.locator('.realtor-editor > summary').click()
+                await row.locator('.realtor-edit').click()
                 await row.locator('.realtor-select').select_option('rejected')
                 comment = '<img src=x onerror=alert(1)> Плохой подъезд\nДокументы?'
                 await row.locator('.realtor-comment').fill(comment)
                 await page.evaluate('refresh()')
                 await expect(row.locator('.realtor-comment')).to_have_value(comment)
-                await row.locator('.realtor-editor button').click()
+                await row.locator('.realtor-editor .comment-save').click()
                 await expect(row.locator('.realtor-label')).to_have_text('Отбраковано')
                 await expect(row).to_have_class('review-rejected')
                 assert await row.locator('td').first.evaluate('el => getComputedStyle(el).backgroundColor') == rejected_background
@@ -157,8 +158,7 @@ def test_shared_review_ui_login_roles_refresh_and_layout(tmp_path, monkeypatch):
                 await expect(row).to_be_visible()
                 await page.locator('[data-review-filter="all"]').click()
                 await expect(row.locator('.realtor-meta')).to_contain_text('Эксперт')
-                await row.locator('.realtor-details > summary').click()
-                await expect(row.locator('.comment-text')).to_have_text(comment)
+                await expect(row.locator('.comment-preview')).to_have_text(comment)
                 assert await row.locator('img:not(.listing-cover)').count() == 0
                 inject_stale = True
                 await page.evaluate('refresh()')
@@ -169,9 +169,9 @@ def test_shared_review_ui_login_roles_refresh_and_layout(tmp_path, monkeypatch):
                 await expect(row).to_have_class('review-rejected')
                 await expect(row).to_be_hidden()
                 await page.locator('#rejected-section > summary').click()
-                await row.locator('.realtor-editor > summary').click()
+                await row.locator('.realtor-edit').click()
                 await row.locator('.realtor-select').select_option('approved')
-                await row.locator('.realtor-editor button').click()
+                await row.locator('.realtor-editor .comment-save').click()
                 await expect(row).to_have_class('review-new')
                 await expect(page.locator('#rejected-count')).to_have_text('0')
                 await expect(page.locator('[data-review-filter="new"] span')).to_have_text('3')
@@ -209,7 +209,7 @@ def test_shared_review_ui_login_roles_refresh_and_layout(tmp_path, monkeypatch):
                 # Schedule and record a shared viewing from a phone. Drafts
                 # survive polls, and the outcome drives the existing family status.
                 await page.locator('tr[data-listing-id="789"] .selection-toggle').click()
-                await expect(page.locator('tr[data-listing-id="789"]')).to_have_count(0)
+                await expect(page.locator('tr[data-listing-id="789"] .membership-label')).to_be_visible()
                 await page.locator('.page-nav a[href="/ours"]').click()
                 await page.wait_for_url('https://xata.test/ours')
                 visit_row = page.locator('tr[data-listing-id="789"]')
@@ -308,7 +308,7 @@ def test_property_identity_relisting_and_late_poll_after_manual_merge(tmp_path,m
                 await expect(page.locator('#listings tr')).to_have_count(1)
                 row=page.locator('tr[data-listing-id="7000"]')
                 await page.evaluate("window.beforeRelist=document.querySelector('#listings tr')")
-                await row.locator('.realtor-editor > summary').click()
+                await row.locator('.realtor-edit').click()
                 await row.locator('.realtor-comment').fill('Черновик после перепубликации')
                 with main.database() as conn:
                     main.save_items(conn,[sample('7001',price=12500000)],'2026-10-18T10:00:00+00:00')
@@ -317,9 +317,9 @@ def test_property_identity_relisting_and_late_poll_after_manual_merge(tmp_path,m
                 row=page.locator('tr[data-listing-id="7001"]')
                 await expect(row.locator('.realtor-comment')).to_have_value('Черновик после перепубликации')
                 assert await page.evaluate("window.beforeRelist===document.querySelector('#listings tr')")
-                assert await row.locator('.realtor-editor').evaluate('el=>el.open')
+                assert await row.locator('.realtor-editor').is_visible()
                 await row.locator('.realtor-select').select_option('approved')
-                await row.locator('.realtor-editor button').click()
+                await row.locator('.realtor-editor .comment-save').click()
                 await expect(row.locator('.realtor-meta')).not_to_have_text('')
                 await expect(row.locator('.review-label')).to_have_text('Понравилось')
                 with main.database() as conn:
@@ -327,12 +327,12 @@ def test_property_identity_relisting_and_late_poll_after_manual_merge(tmp_path,m
                 await page.evaluate('refresh(true)')
                 await expect(page.locator('#listings tr')).to_have_count(2)
                 source=page.locator('tr[data-listing-id="7002"]')
-                await source.locator('.realtor-editor > summary').click()
+                await source.locator('.realtor-edit').click()
                 await source.locator('.realtor-comment').fill('Несохранённый комментарий')
                 await source.locator('.duplicate-actions button').first.click()
                 await expect(page.locator('#page-message')).to_contain_text('Сначала сохраните')
                 await expect(page.locator('#listings tr')).to_have_count(2)
-                await source.locator('.realtor-editor button').click()
+                await source.locator('.realtor-editor .comment-save').click()
                 await expect(source.locator('.realtor-meta')).not_to_have_text('')
                 await page.evaluate('async()=>{if(refreshPromise)await refreshPromise;}')
                 hold=True
@@ -866,7 +866,7 @@ def two_page_app(tmp_path,monkeypatch):
         visit('9506',completed_at='2026-10-23T10:00:00Z')
         assert client.post('/api/listings/9507/review',json={'status':'liked'}).status_code==200
         for key in ('9501','9504','9508'):
-            assert client.post('/api/listings/'+key+'/realtor-review',json={'status':'rejected','comment':'Проверить документы'}).status_code==200
+            assert post_realtor(client,'/api/listings/'+key+'/realtor-review',json={'status':'rejected','comment':'Проверить документы'}).status_code==200
         for key in map(str,range(9500,9507)):
             item=current(key)
             assert client.patch('/api/listings/'+key+'/selection',json={'property_id':item['property_id'],
@@ -903,25 +903,25 @@ def test_two_pages_selection_groups_stage_colors_roles_and_reload(two_page_app,p
             page=await context.new_page();errors=[]
             page.on('pageerror',lambda error:errors.append(str(error)))
             await page.goto('https://xata.test/')
-            await expect(page.locator('#listings tr')).to_have_count(1)
-            await expect(page.locator('#rejected-listings tr')).to_have_count(1)
+            await expect(page.locator('#listings tr')).to_have_count(6)
+            await expect(page.locator('#rejected-listings tr')).to_have_count(3)
             await expect(page.locator('#nav-ours-count')).to_have_text('7')
-            await expect(page.locator('#nav-all-count')).to_have_text('2')
+            await expect(page.locator('#nav-all-count')).to_have_text('9')
             assert await page.locator('#listing-table th').all_text_contents()==[
-                'Фото','№ ЦИАН','ЖК / адрес','Цена','Ипотека / мес.','Площадь','Этаж','Метро','До метро','Добавлено','Статус','Риелтор']
+                'Риелтор','Фото','Номер ЦИАН / ссылка','Объект / адрес','Цена','Ипотека / мес.','Площадь','Этаж','Метро','Добавлено','Семейная оценка']
             assert await page.locator('#visit-dialog,#visit-agenda,#compare-dialog,[data-review-filter="viewed"],.visit-date-input').count()==0
             stale=client.get('/api/state').json()
             await page.locator('tr[data-listing-id="9507"] .selection-toggle').click()
-            await expect(page.locator('tr[data-listing-id="9507"]')).to_have_count(0)
+            await expect(page.locator('tr[data-listing-id="9507"] .membership-label')).to_be_visible()
             await expect(page.locator('#nav-ours-count')).to_have_text('8')
             inject=True
             await page.evaluate('refresh(true)')
-            await expect(page.locator('tr[data-listing-id="9507"]')).to_have_count(0)
+            await expect(page.locator('tr[data-listing-id="9507"] .membership-label')).to_be_visible()
             await page.locator('.page-nav a[href="/ours"]').click()
             await page.wait_for_url('https://xata.test/ours')
             await expect(page.locator('#count')).to_have_text('8')
             assert await page.locator('.viewed-table').first.locator('th').all_text_contents()==[
-                'Фото','Квартира','Цена','Дата просмотра','Результат просмотра','Риелтор / юрист','Этап отбора']
+                'Риелтор / юрист','Фото','Квартира','Цена','Дата просмотра','Результат просмотра','Наш комментарий','Этап отбора']
             added=page.locator('tr[data-listing-id="9507"]')
             await added.locator('.selection-toggle').click()
             await expect(added).to_have_count(0)
@@ -942,7 +942,7 @@ def test_two_pages_selection_groups_stage_colors_roles_and_reload(two_page_app,p
             await expect(row.locator('.visit-date-input')).to_have_count(0)
             await expect(row.locator('.viewed-stage-select')).to_have_value('liked')
             assert await row.locator('td').first.evaluate('el=>getComputedStyle(el).backgroundColor')=='rgb(233, 243, 252)'
-            assert '73, 134, 181' in await row.locator('td').first.evaluate('el=>getComputedStyle(el).boxShadow')
+            assert '73, 134, 181' in await (row if phone else row.locator('td').first).evaluate('el=>getComputedStyle(el).borderLeftColor' if phone else 'el=>getComputedStyle(el).boxShadow')
             before=current('9501');stale=client.get('/api/state').json()
             await row.locator('.viewed-stage-select').select_option('documents')
             await expect(page.locator('#viewed-documents-listings tr[data-listing-id="9501"]')).to_have_count(1)
@@ -978,11 +978,11 @@ def test_two_pages_selection_groups_stage_colors_roles_and_reload(two_page_app,p
             await expect(neutral).to_have_count(0)
             await page.locator('.page-nav a[href="/"]').click()
             await page.wait_for_url('https://xata.test/')
-            await expect(page.locator('#rejected-count')).to_have_text('2')
+            await expect(page.locator('#rejected-count')).to_have_text('3')
             await page.locator('#rejected-section > summary').click()
             await expect(page.locator('tr[data-listing-id="9504"]')).to_be_visible()
             await page.locator('tr[data-listing-id="9504"] .selection-toggle').click()
-            await expect(page.locator('tr[data-listing-id="9504"]')).to_have_count(0)
+            await expect(page.locator('tr[data-listing-id="9504"] .membership-label')).to_be_visible()
             await page.goto('https://xata.test/ours')
             await expect(page.locator('#count')).to_have_text('7')
             await page.reload()
@@ -990,7 +990,7 @@ def test_two_pages_selection_groups_stage_colors_roles_and_reload(two_page_app,p
             assert not await page.locator('#viewed-rejected-section').evaluate('el=>el.open')
             assert await page.evaluate('document.documentElement.scrollWidth<=innerWidth')
             if phone:
-                assert await page.locator('#viewed-documents-section .viewed-wrap').evaluate('el=>el.scrollWidth>el.clientWidth')
+                assert await page.locator('#viewed-documents-section .viewed-wrap').evaluate('el=>el.scrollWidth<=el.clientWidth')
                 assert (await row.locator('.viewed-stage-select').bounding_box())['height']>=44
             sign_in(client,'expert','password-123')
             await page.reload()

@@ -27,7 +27,7 @@ from app.property_match import (best_match, candidate_rows, create_property, rec
 from app.criteria import browser_criteria
 from app.finance import mortgage_payment
 from app.covers import CoverCache, cover_url
-from app import viewings
+from app import viewings, comments
 from app import source
 from app.csv_source import CianCsvSource, MAX_BYTES
 from app.browser_source import CianBrowserSource, BrowserAttention
@@ -162,7 +162,8 @@ def property_context(conn):
         if not any(item['candidate_property_id']==target for item in pending.get(source,[])):
             pending.setdefault(source,[]).append(choice)
     return {'rows':rows,'props':props,'groups':groups,'prices':prices,'pending':pending,
-            'revision':identity_revision(conn),'by_id':by_id,'visits':viewings.context(conn)}
+            'revision':identity_revision(conn),'by_id':by_id,'visits':viewings.context(conn),
+            'comments':comments.context(conn)}
 
 
 def property_listing_data(conn, row, context=None):
@@ -194,6 +195,7 @@ def property_listing_data(conn, row, context=None):
     item['viewing_documents_ready'] = bool(context['props'][pid]['viewing_documents_ready'])
     item['in_our_list'] = bool(context['props'][pid]['in_our_list'])
     item['selection_version'] = context['props'][pid]['selection_version']
+    item.update(comments.data(context['props'][pid],context['comments']))
     item['viewed_group'] = viewings.classification(item['visits'],item['viewing_documents_ready'])
     return item
 
@@ -390,7 +392,7 @@ async def protect_origin(request, call_next):
 
 STATIC = Path(__file__).parent / 'static'
 ASSET_VERSIONS = {name: hashlib.sha256((STATIC / name).read_bytes()).hexdigest()[:16]
-                  for name in ('app.js', 'visits.js', 'compare.js', 'review-state.js', 'login.js', 'style.css', 'xata-logo.svg', 'xata-mark.svg')}
+                  for name in ('app.js', 'comments.js', 'visits.js', 'compare.js', 'review-state.js', 'login.js', 'style.css', 'xata-logo.svg', 'xata-mark.svg')}
 
 
 def html_document(name, page='all'):
@@ -478,6 +480,8 @@ def review_listing(listing_id: str, data: Review, user=Depends(auth)):
 
 class RealtorReview(BaseModel):
     model_config = ConfigDict(extra='forbid')
+    property_id: int = Field(ge=1)
+    realtor_version: int = Field(ge=0)
     status: Literal['pending', 'approved', 'rejected']
     comment: str = Field(default='', max_length=2000)
 
@@ -500,15 +504,29 @@ def realtor_review(listing_id: str, data: RealtorReview, user=Depends(auth)):
         if not target:
             raise HTTPException(404, 'Объявление не найдено')
         property_id = target['property_id']
-        version = conn.execute('SELECT MAX(realtor_version)+1 FROM listings WHERE property_id=?',(property_id,)).fetchone()[0]
+        current_version = conn.execute('SELECT MAX(realtor_version) FROM listings WHERE property_id=?',(property_id,)).fetchone()[0]
+        if data.property_id!=property_id or data.realtor_version!=current_version:
+            raise HTTPException(409,'Оценка риелтора уже изменена. Черновик сохранён; сверьте актуальную версию.')
+        version = current_version+1
         cursor = conn.execute('''UPDATE listings SET realtor_status=?,realtor_comment=?,realtor_updated_at=?,
                                  realtor_updated_by=?,realtor_version=? WHERE property_id=?''',
                               (data.status, data.comment, timestamp, user['id'], version, property_id))
         if not cursor.rowcount:
             raise HTTPException(404, 'Объявление не найдено')
+        comments.record(conn,property_id,'realtor',data.comment,timestamp,user['id'],version,listing_id,data.status)
         item = property_listing_data(conn, current_property_row(conn, property_id))
     log.info('Realtor review changed user_id=%s listing_id=%s', user['id'], listing_id)
     return item
+
+
+@app.patch('/api/listings/{listing_id}/family-comment')
+def family_comment(listing_id: str, data: comments.FamilyCommentInput, user=Depends(auth)):
+    if user['role'] not in ('admin','reviewer'):
+        raise HTTPException(403,'Наш комментарий изменяют только покупатели и администратор')
+    with database() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        pid=comments.save(conn,listing_id,data,user['id'],datetime.now(timezone.utc).isoformat())
+        return property_listing_data(conn,current_property_row(conn,pid))
 
 
 def save_viewing(listing_id, data, user, visit_id=None):
@@ -807,7 +825,7 @@ def export():
     book = Workbook()
     sheet = book.active
     sheet.title = 'Объявления'
-    sheet.append(['ID', 'Название', 'Цена, ₽', 'Адрес', 'Ссылка', 'Впервые найдено (UTC)', 'Последнее обновление (UTC)', 'ЖК', 'Площадь, м²', 'Этаж', 'Метро', 'Время до метро', 'Источник', 'Последний импорт (UTC)', 'Текст карточки', 'Описание', 'Пешком до метро, мин', 'Статус', 'Статус изменил', 'Дата изменения статуса (UTC)', 'Оценка риелтора', 'Комментарий риелтора', 'Риелторскую оценку изменил', 'Дата риелторской оценки (UTC)', 'Ипотека / мес. (6 млн / 18% / 15 лет)', 'Property ID', 'Все CIAN ID', 'Перепубликаций', 'Мин. замеченная цена, ₽', 'Макс. замеченная цена, ₽', 'Возможный дубль, %', 'История цен (UTC)', 'Публикации: даты и состояние', 'Группа после просмотра', 'В нашем списке'])
+    sheet.append(['ID', 'Название', 'Цена, ₽', 'Адрес', 'Ссылка', 'Впервые найдено (UTC)', 'Последнее обновление (UTC)', 'ЖК', 'Площадь, м²', 'Этаж', 'Метро', 'Время до метро', 'Источник', 'Последний импорт (UTC)', 'Текст карточки', 'Описание', 'Пешком до метро, мин', 'Статус', 'Статус изменил', 'Дата изменения статуса (UTC)', 'Оценка риелтора', 'Комментарий риелтора', 'Риелторскую оценку изменил', 'Дата риелторской оценки (UTC)', 'Ипотека / мес. (6 млн / 18% / 15 лет)', 'Property ID', 'Все CIAN ID', 'Перепубликаций', 'Мин. замеченная цена, ₽', 'Макс. замеченная цена, ₽', 'Возможный дубль, %', 'История цен (UTC)', 'Публикации: даты и состояние', 'Группа после просмотра', 'В нашем списке', 'Наш комментарий'])
     with database() as conn:
         items = sorted(grouped_listing_data(conn), key=lambda item: (item['price'] is None, item['price'] or 0))
         for item in items:
@@ -828,6 +846,7 @@ def export():
                            'rejected':'Не понравилось'}.get(item['viewed_group'],
                               'Думаем — уточните результат' if any(v['status']=='completed' and v['outcome']=='thinking' for v in item['visits']) else ''))
             values.append('Да' if item['in_our_list'] else 'Нет')
+            values.append(item['family_comment'])
             sheet.append([("'" + value if isinstance(value, str) and value.startswith(('=', '+', '-', '@')) else value) for value in values])
     visits_sheet = book.create_sheet('Просмотры')
     visits_sheet.append(['Property ID','Текущий CIAN ID','Адрес','ID просмотра','Дата встречи (UTC)',

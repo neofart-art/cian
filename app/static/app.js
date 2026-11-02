@@ -7,7 +7,7 @@ const message = document.querySelector('#page-message');
 const records = new Map(), rows = new Map(), pendingReviews = new Set(), pendingRealtors = new Set(), pendingDuplicates = new Set(), pendingClassifications = new Set(), pendingSelections = new Set();
 const labels = {new:'НОВОЕ', liked:'Понравилось', viewed:'Просмотрено', rejected:'Не подходит'};
 const realtorLabels = {pending:'Не оценено',approved:'Одобрено',rejected:'Отбраковано'};
-let selectedSort = null, identityRevision = 0, refreshPromise = null;
+let searchText='', selectedSort = null, identityRevision = 0, refreshPromise = null;
 let currentUser = null, csrfToken = '', pending = false, refreshing = false, selectedFilter = 'all';
 
 function setText(node, value) {
@@ -41,6 +41,11 @@ function jsonOptions(method, data) {
 const visitUI = ourPage ? XataVisits.create({getItem:key=>records.get(key),getUser:()=>currentUser,
   saveItem:item=>{acceptListing(item);setText(message,'Просмотр сохранён.');message.className='';},request:async(url,options)=>responseJson(await apiFetch(url,options)),
   jsonOptions,render:renderListings,refresh:()=>refresh(true)}) : null;
+const commentOptions={getItem:key=>records.get(key),getUser:()=>currentUser,
+  request:async(url,options)=>responseJson(await apiFetch(url,options)),jsonOptions,
+  accept:acceptListing,refresh:()=>refresh(true),render:renderListings};
+const realtorUI=XataComments.create({...commentOptions,kind:'realtor'});
+const familyUI=XataComments.create({...commentOptions,kind:'family'});
 const comparisonUI = ourPage ? XataCompare.create({getItem:key=>{const item=records.get(key);return item?.in_our_list?item:null;},render:renderListings}) : null;
 function cell(row) { const td = document.createElement('td'); row.append(td); return td; }
 function safeCianUrl(value) {
@@ -71,6 +76,9 @@ function makeRow(id) {
   const row = document.createElement('tr');
   row.dataset.listingId = id;
   const cells = Array.from({length:14}, () => cell(row));
+  const cellLabels=['Фото','Номер ЦИАН / ссылка','Объект / адрес','Цена','Ипотека / мес.','Площадь','Этаж','Метро','До метро','Добавлено','Семейная оценка','Риелтор','Дата просмотра','Результат просмотра'];
+  cells.forEach((td,i)=>{td.dataset.label=cellLabels[i];td.className='listing-col-'+i;});
+  cells[11].classList.add('realtor-cell');cells[0].classList.add('photo-cell');
   const link = document.createElement('a');
   link.target = '_blank'; link.rel = 'noopener noreferrer';
   cells[1].append(link);
@@ -94,7 +102,8 @@ function makeRow(id) {
     const option=document.createElement('option');option.value=value;option.textContent=label;stageButton.append(option);
   }
   stageButton.addEventListener('change',()=>changeClassification(id,stageButton.value==='documents'));
-  const stageCell=document.createElement('td');stageCell.className='selection-stage-cell';stageCell.append(groupLabel,stageButton);
+  const stageCell=document.createElement('td');stageCell.className='selection-stage-cell';stageCell.dataset.label='Этап отбора';stageCell.append(groupLabel,stageButton);
+  const membership=document.createElement('span');membership.className='membership-label';membership.textContent='В нашем списке';
   const selectionButton=document.createElement('button');selectionButton.type='button';selectionButton.className='secondary selection-toggle';
   selectionButton.addEventListener('click',()=>changeSelection(id));
   const characteristics=document.createElement('details');characteristics.className='characteristics';
@@ -102,12 +111,13 @@ function makeRow(id) {
   const characteristicsText=document.createElement('p');characteristics.append(characteristicsSummary,characteristicsText);
   if(ourPage){
     characteristics.append(propertyHistory,historyDetails);
-    cells[2].append(title,address,link,selectionButton,characteristics,duplicateBox);
-    row.replaceChildren(cells[0],cells[2],cells[3],cells[12],cells[13],cells[11],stageCell);
+    cells[2].append(title,address,link,membership,selectionButton,characteristics,duplicateBox);
+    row.replaceChildren(cells[11],cells[0],cells[2],cells[3],cells[12],cells[13],stageCell);
     cells[12].className='viewing-date-cell';cells[13].className='viewing-result-cell';
   } else {
-    cells[2].append(title,address,selectionButton,propertyHistory,historyDetails,duplicateBox);
-    row.replaceChildren(...cells.slice(0,12));
+    characteristics.append(propertyHistory,historyDetails);
+    cells[2].append(title,address,membership,selectionButton,characteristics,duplicateBox);
+    row.replaceChildren(cells[11],...cells.slice(0,8),cells[9],cells[10]);
   }
   const coverButton = document.createElement('button'); coverButton.type='button'; coverButton.className='cover-button';
   const coverImage = document.createElement('img'); coverImage.className='listing-cover'; coverImage.loading='lazy';
@@ -130,27 +140,15 @@ function makeRow(id) {
   select.addEventListener('blur', () => renderListings());
   const returnHint=document.createElement('small');returnHint.className='return-hint';
   cells[10].append(badge, select, meta, saving,returnHint);
-  const realtorBadge = document.createElement('span'); realtorBadge.className = 'realtor-label';
-  const commentPreview = document.createElement('small'); commentPreview.className = 'comment-preview';
-  const commentDetails = document.createElement('details'), commentSummary = document.createElement('summary'), commentText = document.createElement('p');
-  commentDetails.className = 'realtor-details'; commentSummary.textContent = 'Комментарий'; commentText.className = 'comment-text';
-  commentDetails.append(commentSummary, commentText);
-  const realtorMeta = document.createElement('small'); realtorMeta.className = 'realtor-meta';
-  const editor = document.createElement('details'); editor.className = 'realtor-editor';
-  const editorSummary = document.createElement('summary'); editorSummary.textContent = 'Оценить / изменить';
-  const realtorForm = document.createElement('form');
-  const realtorSelect = document.createElement('select'); realtorSelect.className = 'realtor-select';
-  realtorSelect.setAttribute('aria-label', 'Оценка риелтора ' + id);
-  for (const [value,label] of Object.entries(realtorLabels)) { const option = document.createElement('option'); option.value=value; option.textContent=label; realtorSelect.append(option); }
-  const comment = document.createElement('textarea'); comment.maxLength = 2000; comment.rows = 4; comment.className = 'realtor-comment';
-  comment.setAttribute('aria-label', 'Комментарий риелтора ' + id);
-  const saveRealtor = document.createElement('button'); saveRealtor.type = 'submit'; saveRealtor.className = 'compact'; saveRealtor.textContent = 'Сохранить';
-  const realtorSaving = document.createElement('small'); realtorSaving.setAttribute('aria-live','polite');
-  realtorForm.append(realtorSelect,comment,saveRealtor,realtorSaving); editor.append(editorSummary,realtorForm);
-  cells[11].append(realtorBadge,commentPreview,commentDetails,realtorMeta,editor);
-  const entry = {row,cells,groupLabel,stageButton,selectionButton,characteristicsText,compareInput,compareLabel,returnHint,link,title,address,propertyHistory,coverButton,coverImage,coverPlaceholder,failedCover:null,failedCoverAt:0,historyDetails,historyText,duplicateCompare,duplicateBox,duplicateText,duplicateActions,
-    duplicateSame,duplicateDifferent,date,clock,badge,select,meta,saving,
-    realtorBadge,commentPreview,commentDetails,commentText,realtorMeta,editor,realtorSelect,comment,saveRealtor,realtorSaving,dirty:false};
+  const realtorComment=realtorUI.element(id),familyComment=familyUI.element(id);
+  cells[11].append(realtorComment);
+  const familyCell=document.createElement('td');familyCell.className='family-comment-cell';familyCell.dataset.label='Наш комментарий';familyCell.append(familyComment);
+  const familyDetails=document.createElement('details');familyDetails.className='family-details';
+  const familySummary=document.createElement('summary');familySummary.textContent='Наш комментарий';
+  if(ourPage)row.insertBefore(familyCell,stageCell);
+  else{familyDetails.append(familySummary,familyComment);characteristics.append(familyDetails);}
+  const entry = {row,cells,membership,groupLabel,stageButton,selectionButton,characteristicsText,familyDetails,compareInput,compareLabel,returnHint,link,title,address,propertyHistory,coverButton,coverImage,coverPlaceholder,failedCover:null,failedCoverAt:0,historyDetails,historyText,duplicateCompare,duplicateBox,duplicateText,duplicateActions,
+    duplicateSame,duplicateDifferent,date,clock,badge,select,meta,saving};
   coverImage.addEventListener('error',()=>{
     entry.failedCover=coverImage.getAttribute('src'); entry.failedCoverAt=Date.now();
     coverButton.hidden=true; coverPlaceholder.hidden=false;
@@ -159,12 +157,8 @@ function makeRow(id) {
     entry.failedCover=null; entry.failedCoverAt=0;
     coverButton.hidden=false; coverPlaceholder.hidden=true;
   });
-  comment.addEventListener('input', () => {entry.dirty=true;});
-  realtorSelect.addEventListener('change', () => {entry.dirty=true;});
-  realtorForm.addEventListener('submit', event => {event.preventDefault(); changeRealtor(id);});
   duplicateSame.addEventListener('click', () => decideDuplicate(id,'same'));
   duplicateDifferent.addEventListener('click', () => decideDuplicate(id,'different'));
-  for (const field of [realtorSelect,comment]) field.addEventListener('blur', () => renderListings());
   rows.set(id, entry);
   return entry;
 }
@@ -174,8 +168,6 @@ function renderRow(item, forceReview = false) {
   entry.row.dataset.listingId = item.id;
   entry.row.dataset.propertyId = item.property_id || '';
   entry.select.setAttribute('aria-label','Статус объявления ' + item.id);
-  entry.realtorSelect.setAttribute('aria-label','Оценка риелтора ' + item.id);
-  entry.comment.setAttribute('aria-label','Комментарий риелтора ' + item.id);
   const {row,cells,link,title,address,date,clock,badge,select,meta,saving} = entry;
   setText(link, (ourPage?'ЦИАН ':'')+item.id);
   if (safeCianUrl(item.url)) link.href = item.url; else link.removeAttribute('href');
@@ -223,7 +215,8 @@ function renderRow(item, forceReview = false) {
   const review = item.review_status || 'new';
   const effectiveStatus = XataReview.effectiveStatus(item);
   const group=ourPage?XataReview.section(item,'ours'):null,legacy=XataReview.latestCompleted(item)?.outcome==='thinking';
-  row.className = 'review-' + effectiveStatus + (group?' viewed-'+group:'');
+  row.className = 'review-' + effectiveStatus + (group?' viewed-'+group:'')+(!ourPage&&item.in_our_list?' in-our-list':'');
+  entry.membership.hidden=!item.in_our_list;
   row.dataset.viewedGroup=group||'';
   const groupLabels={planned:'К просмотру',liked:'Оставляем в запасе',documents:'Проверка документов',rejected:'Не понравилось'};
   entry.groupLabel.hidden=!ourPage;
@@ -234,8 +227,8 @@ function renderRow(item, forceReview = false) {
   if(!pendingClassifications.has(id))entry.stageButton.value=group==='documents'?'documents':'liked';
   entry.selectionButton.hidden=!['admin','reviewer'].includes(currentUser?.role);
   entry.selectionButton.disabled=pendingSelections.has(id);
-  setText(entry.selectionButton,ourPage?'Убрать из нашего списка':'В наш список');
-  entry.selectionButton.setAttribute('aria-label',(ourPage?'Убрать из нашего списка: квартира ':'В наш список: квартира ')+item.id);
+  setText(entry.selectionButton,item.in_our_list?'Убрать из нашего списка':'В наш список');
+  entry.selectionButton.setAttribute('aria-label',(item.in_our_list?'Убрать из нашего списка: квартира ':'В наш список: квартира ')+item.id);
   setText(entry.characteristicsText,'Площадь: '+(item.area==null?'—':item.area+' м²')+'\nЭтаж: '+(item.floor||'—')+'\nМетро: '+(item.metro||'—')+'\nДо метро: '+(item.metro_time||'—'));
   row.dataset.reviewStatus = review;
   setText(badge, labels[review]);
@@ -248,24 +241,8 @@ function renderRow(item, forceReview = false) {
   const changed = item.review_updated_at ? new Date(item.review_updated_at) : null;
   setText(meta, changed ? (author || '') + ' · ' + changed.toLocaleString('ru-RU', {day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit'}) : '');
   meta.title = changed ? changed.toLocaleString('ru-RU') : '';
-  const realtor = item.realtor_status || 'pending';
-  setText(entry.realtorBadge, group&&realtor==='rejected'?'Отбраковано риелтором':realtorLabels[realtor]);
-  entry.realtorBadge.className = 'realtor-label realtor-' + realtor;
-  setText(entry.commentPreview, item.realtor_comment ? item.realtor_comment.slice(0,60) + (item.realtor_comment.length > 60 ? '…' : '') : '');
-  entry.commentDetails.hidden = !item.realtor_comment;
-  setText(entry.commentText, item.realtor_comment || '');
-  const realtorAuthor = item.realtor_updated_by_name || item.realtor_updated_by_username || (item.realtor_updated_by ? 'Пользователь #' + item.realtor_updated_by : '');
-  const realtorDate = item.realtor_updated_at ? new Date(item.realtor_updated_at) : null;
-  setText(entry.realtorMeta, realtorDate ? realtorAuthor + ' · ' + realtorDate.toLocaleString('ru-RU', {day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '');
-  entry.realtorMeta.title = realtorDate ? realtorDate.toLocaleString('ru-RU') : '';
-  const canRealtor = ['admin','realtor'].includes(currentUser?.role);
-  entry.editor.hidden = !canRealtor;
-  entry.realtorSelect.disabled = entry.comment.disabled = entry.saveRealtor.disabled = !canRealtor || pendingRealtors.has(id);
-  if (!entry.dirty && !pendingRealtors.has(id)) {
-    entry.realtorSelect.value = realtor;
-    entry.comment.value = item.realtor_comment || '';
-  }
-  setText(entry.realtorSaving, pendingRealtors.has(id) ? 'Сохраняем…' : '');
+  realtorUI.update(id);familyUI.update(id);
+  entry.familyDetails.hidden=!item.family_comment&&!(item.comment_history||[]).some(h=>h.kind==='family');
   visitUI?.renderCells(cells[12],cells[13],item);
   entry.compareLabel.hidden=!XataReview.comparisonEligible(item);
   entry.compareInput.checked=!!comparisonUI?.has(id);
@@ -273,11 +250,20 @@ function renderRow(item, forceReview = false) {
   entry.returnHint.hidden=!!group||item.realtor_status!=='rejected';
   setText(entry.returnHint,'Возврат блокирует отказ риелтора. Его оценку меняет риелтор или администратор.');
   row.hidden = !ourPage && XataReview.section(item,pageMode)==='main' && selectedFilter !== 'all' && (selectedFilter === 'planned' || selectedFilter !== effectiveStatus);
+  row.hidden=row.hidden||!matchesSearch(item);
   return row;
 }
+function matchesSearch(item) {
+  return !searchText||[item.id,...(item.listing_ids||[]),item.title,item.complex_name,item.address,item.metro]
+    .filter(Boolean).join(' ').toLocaleLowerCase('ru').includes(searchText);
+}
+document.querySelector('#listing-search')?.addEventListener('input',event=>{
+  searchText=event.target.value.trim().toLocaleLowerCase('ru');renderListings();
+});
 function renderListings() {
   const all=XataReview.ordered(records.values(),selectedSort);
-  const ordered=all.filter(item=>XataReview.section(item,pageMode)!==null);
+  const pageItems=all.filter(item=>XataReview.section(item,pageMode)!==null);
+  const ordered=pageItems.filter(matchesSearch);
   const destinations=ourPage
     ? new Map(['planned','liked','documents','rejected'].map(group=>[group,document.querySelector('#viewed-'+group+'-listings')]))
     : new Map([['main',document.querySelector('#listings')],['refused',document.querySelector('#rejected-listings')]]);
@@ -294,9 +280,9 @@ function renderListings() {
     const target=destinations.get(XataReview.section(item,pageMode)),key=XataReview.key(item);
     if(!target){rows.get(key)?.row.remove();continue;}
     const row=renderRow(item);
-    if(row.parentNode!==target)target.append(row);
+    if(row.parentNode!==target&&!(row.isConnected&&(realtorUI.editing(key)||familyUI.editing(key))))target.append(row);
   }
-  if(!pendingReviews.size&&!pendingRealtors.size&&!pendingDuplicates.size&&!pendingClassifications.size&&!pendingSelections.size&&!document.activeElement?.matches('.review-select,.realtor-select,.realtor-comment,.visit-date-input,.visit-date-picker,.visit-date-clear,.visit-date-ok,.viewed-stage-select')) {
+  if(![...rows.keys()].some(key=>realtorUI.editing(key)||familyUI.editing(key))&&!pendingReviews.size&&!pendingRealtors.size&&!pendingDuplicates.size&&!pendingClassifications.size&&!pendingSelections.size&&!document.activeElement?.matches('.review-select,.realtor-select,.realtor-comment,.family-comment,.visit-date-input,.visit-date-picker,.visit-date-clear,.visit-date-ok,.viewed-stage-select')) {
     for(const [section,target] of destinations) {
       let cursor=target.firstElementChild;
       for(const item of ordered.filter(item=>XataReview.section(item,pageMode)===section)) {
@@ -310,13 +296,15 @@ function renderListings() {
     node.setAttribute('aria-pressed',String(node.dataset.reviewFilter===selectedFilter));
     setText(node.querySelector('span'),counts[node.dataset.reviewFilter]);
   }
-  setText(document.querySelector('#count'),ourPage?ordered.length:active.length);
+  setText(document.querySelector('#count'),pageItems.length);
+  const found=ordered.filter(item=>ourPage||XataReview.section(item,pageMode)!=='main'||selectedFilter==='all'||XataReview.effectiveStatus(item)===selectedFilter).length;
+  setText(document.querySelector('#found-count'),'Найдено: '+found+' из '+pageItems.length);
   setText(document.querySelector('#rejected-count'),ordered.length-active.length);
   for(const group of ['planned','liked','documents','rejected'])
     setText(document.querySelector('#viewed-'+group+'-count'),ordered.filter(item=>XataReview.section(item,pageMode)===group).length);
   const selected=all.filter(item=>item.in_our_list).length;
   setText(document.querySelector('#nav-ours-count'),selected);
-  setText(document.querySelector('#nav-all-count'),all.length-selected);
+  setText(document.querySelector('#nav-all-count'),all.length);
   const empty=document.querySelector('#empty');
   empty.hidden=ourPage?ordered.length>0:(counts[selectedFilter]||0)>0;
   setText(empty,ourPage?'В нашем списке пока нет квартир. Выберите варианты на странице «Все объявления».':
@@ -344,14 +332,14 @@ async function changeClassification(id, documentsReady) {
 }
 async function changeSelection(id) {
   if(pendingSelections.has(id)||!records.has(id))return;
-  if(rows.get(id)?.dirty){
+  if(realtorUI.editing(id)||familyUI.editing(id)){
     setText(message,'Сначала сохраните комментарий риелтора.');message.className='error';return;
   }
   const item=records.get(id);pendingSelections.add(id);renderRow(item);
   try{
     const saved=await responseJson(await apiFetch('/api/listings/'+encodeURIComponent(item.id)+'/selection',
       jsonOptions('PATCH',{property_id:item.property_id,selection_version:item.selection_version,selected:!item.in_our_list})));
-    acceptListing(saved);setText(message,saved.in_our_list?'Квартира перенесена на страницу «Наши квартиры».':'Квартира возвращена на страницу «Все объявления».');message.className='';
+    acceptListing(saved);setText(message,saved.in_our_list?'Квартира добавлена в наш список и остаётся во всех объявлениях.':'Квартира убрана из нашей подборки. Данные и история сохранены.');message.className='';
   }catch(error){setText(message,error.message);message.className='error';await refresh(true);}
   finally{pendingSelections.delete(id);renderListings();}
 }
@@ -371,20 +359,9 @@ async function changeReview(id, nextStatus) {
   }
 }
 for (const node of document.querySelectorAll('[data-review-filter]')) node.addEventListener('click', () => { selectedFilter = node.dataset.reviewFilter; renderListings(); });
-async function changeRealtor(id) {
-  if (pendingRealtors.has(id) || !records.has(id)) return;
-  const entry = rows.get(id), data = {status:entry.realtorSelect.value,comment:entry.comment.value};
-  pendingRealtors.add(id); renderRow(records.get(id));
-  try {
-    const saved = await responseJson(await apiFetch('/api/listings/' + encodeURIComponent(records.get(id).id) + '/realtor-review', jsonOptions('POST',data)));
-    acceptListing(saved); entry.dirty = false;
-    setText(message,'Оценка риелтора сохранена.'); message.className='';
-  } catch(error) { setText(message,error.message); message.className='error'; }
-  finally {pendingRealtors.delete(id); renderListings();}
-}
 async function decideDuplicate(id, decision) {
   if (pendingDuplicates.has(id) || !records.has(id)) return;
-  if (rows.get(id)?.dirty) {
+  if (realtorUI.editing(id)||familyUI.editing(id)) {
     setText(message,'Сначала сохраните комментарий риелтора перед решением по дублю.'); message.className='error';
     return;
   }
@@ -404,14 +381,20 @@ async function decideDuplicate(id, decision) {
     renderListings();
   }
 }
-for (const node of document.querySelectorAll('[data-sort]')) node.addEventListener('click', () => {
-  selectedSort = XataReview.cycleSort(selectedSort,node.dataset.sort);
-  for (const header of document.querySelectorAll('[data-sort]')) {
-    const direction = selectedSort?.key === header.dataset.sort ? selectedSort.direction : null;
-    header.closest('th').setAttribute('aria-sort', direction === 'asc' ? 'ascending' : direction === 'desc' ? 'descending' : 'none');
-    setText(header.querySelector('[data-sort-indicator]'),direction === 'asc' ? ' ↑' : direction === 'desc' ? ' ↓' : '');
+function updateSort(sort) {
+  selectedSort=sort;
+  for(const header of document.querySelectorAll('[data-sort]')) {
+    const direction=selectedSort?.key===header.dataset.sort?selectedSort.direction:null;
+    header.closest('th').setAttribute('aria-sort',direction==='asc'?'ascending':direction==='desc'?'descending':'none');
+    setText(header.querySelector('[data-sort-indicator]'),direction==='asc'?' ↑':direction==='desc'?' ↓':'');
   }
+  const mobile=document.querySelector('#mobile-sort');
+  if(mobile)mobile.value=sort?sort.key+':'+sort.direction:'';
   renderListings();
+}
+for(const node of document.querySelectorAll('[data-sort]'))node.addEventListener('click',()=>updateSort(XataReview.cycleSort(selectedSort,node.dataset.sort)));
+document.querySelector('#mobile-sort')?.addEventListener('change',event=>{
+  const [key,direction]=event.target.value.split(':');updateSort(key?{key,direction}:null);
 });
 async function refresh(force=false) {
   if (refreshPromise) {

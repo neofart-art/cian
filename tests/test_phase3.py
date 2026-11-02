@@ -1,3 +1,4 @@
+from tests.helpers import post_realtor
 """Phase 3: real-property grouping, relisting detection and local branding."""
 from app.property_match import listing_match
 from tests.test_multiuser import multi_app
@@ -65,7 +66,7 @@ def test_relisting_inherits_reviews_and_keeps_price_history(multi_app):
         first = main.save_items(conn, [old], '2026-10-01T10:00:00+00:00')
     assert first['added'] == 1
     assert admin.post('/api/listings/700/review', json={'status':'liked'}).status_code == 200
-    assert admin.post('/api/listings/700/realtor-review',
+    assert post_realtor(admin,'/api/listings/700/realtor-review',
                       json={'status':'approved','comment':'Хороший вариант'}).status_code == 200
 
     new = sample('701', price=12450000,

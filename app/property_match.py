@@ -338,6 +338,8 @@ def merge_properties(conn, source, target, now):
         return
     if distinct_properties(conn, source, target):
         raise ValueError('Ранее эти объекты отмечены как разные квартиры')
+    from app.comments import merge as merge_comments
+    merge_comments(conn,source,target,now)
     # Keep lossless review snapshots before an explicitly confirmed merge.
     for row in conn.execute('SELECT * FROM listings WHERE property_id IN (?,?)', (source, target)).fetchall():
         snapshot = json.dumps({name: row[name] for name in REVIEW_FIELDS}, ensure_ascii=False)

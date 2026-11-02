@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from app.csv_source import parse_card_text, is_publication_time
 from app.property_match import create_property, record_price, root_property, save_decision, bump_identity
 from app.viewings import migrate as migrate_viewings
+from app.comments import migrate as migrate_comments
 
 
 def quote(name):
@@ -164,6 +165,7 @@ def migrate_listings(database):
             if row:
                 conn.execute('UPDATE properties SET current_listing_id=? WHERE id=?',(row['id'],prop['id']))
 
+        migrate_comments(conn)
         if not conn.execute("SELECT 1 FROM schema_migrations WHERE name='phase3_price_seed'").fetchone():
             for row in conn.execute(
                 'SELECT id,property_id,first_seen,last_seen,price FROM listings WHERE property_id IS NOT NULL AND price IS NOT NULL ORDER BY COALESCE(first_seen,last_seen),id'

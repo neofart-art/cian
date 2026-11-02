@@ -234,7 +234,7 @@ test('membership independently protects stale polls and partitions both pages',(
   const previous={id:'1',property_id:9,in_our_list:true,selection_version:5,visits_version:4,visits:[]};
   const merged=state.merge(previous,{id:'2',property_id:9,in_our_list:false,selection_version:4,visits_version:3,visits:[],price:12});
   assert.equal(merged.in_our_list,true);assert.equal(merged.price,12);
-  assert.equal(state.section(merged,'all'),null);assert.equal(state.section(merged,'ours'),'planned');
+  assert.equal(state.section(merged,'all'),'main');assert.equal(state.section(merged,'ours'),'planned');
   const removed=state.merge(merged,{...merged,in_our_list:false,selection_version:6,realtor_status:'rejected'});
   assert.equal(state.section(removed,'all'),'refused');assert.equal(state.section(removed,'ours'),null);
   const thinking={...previous,visits:[{id:1,status:'completed',outcome:'thinking',completed_at:'2026-10-24T10:00:00Z'}]};
@@ -244,7 +244,17 @@ test('family opinions and realtor rejection never remove a selected apartment',(
   for(const review_status of ['new','liked','viewed','rejected'])for(const realtor_status of ['pending','approved','rejected']){
     for(const [outcome,group] of [['liked','liked'],['rejected','rejected'],['thinking','planned']]){
       const item={in_our_list:true,review_status,realtor_status,visits:[{id:1,status:'completed',outcome,completed_at:'2026-10-24T10:00:00Z'}]};
-      assert.equal(state.section(item,'all'),null);assert.equal(state.section(item,'ours'),group);
+      assert.equal(state.section(item,'all'),state.effectiveStatus(item)==='rejected'?'refused':'main');assert.equal(state.section(item,'ours'),group);
     }
   }
+});
+
+test('family text, independent versions and both comment histories survive stale refreshes',()=>{
+ const latest={property_id:5,family_comment:'Сохранено',family_comment_version:4,realtor_version:2,
+  comment_history:[{id:3,kind:'family',text:'Сохранено'},{id:2,kind:'realtor',text:'Раньше'}]};
+ const incoming={property_id:5,family_comment:'Старое',family_comment_version:3,realtor_version:3,
+  comment_history:[{id:4,kind:'realtor',text:'Новое'}]};
+ const merged=state.merge(latest,incoming);
+ assert.equal(merged.family_comment,'Сохранено');assert.equal(merged.realtor_version,3);
+ assert.deepEqual(merged.comment_history.map(h=>h.id),[4,3,2]);
 });

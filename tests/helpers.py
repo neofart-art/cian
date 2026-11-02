@@ -22,3 +22,14 @@ def unauthenticated(client, path, **kwargs):
     # A wrong Basic header must no longer grant or override session authentication.
     with TestClient(client.app, base_url='https://testserver') as stranger:
         return stranger.post(path, auth=('bad', 'bad'), **kwargs)
+
+
+def post_realtor(client,path,*,json,**kwargs):
+    """Legacy regression scenarios now send the same optimistic token as the UI."""
+    data=dict(json)
+    response=client.get('/api/state')
+    key=path.split('/')[3]
+    item=next((i for i in response.json().get('listings',[]) if key in i.get('listing_ids',[i['id']])),{}) if response.status_code==200 else {}
+    data.setdefault('property_id',item.get('property_id',1))
+    data.setdefault('realtor_version',item.get('realtor_version',0))
+    return client.post(path,json=data,**kwargs)

@@ -270,3 +270,100 @@ body[data-page=ours] #viewed-section .viewed-table td:nth-child(3){white-space:n
   .page-nav{gap:8px}.page-nav a{font-size:14px;padding:9px 11px}
   .viewed-stage-select{font-size:16px}
 }
+
+/* Shared tables and single-node mobile cards, UI revision 2026-11. */
+body{font-size:16px}
+input,select,textarea,button,.export{font-size:16px}
+button,.export,input,select{min-height:44px}
+button,a,summary,label,small{overflow-wrap:anywhere}
+body[data-page] :is(#listing-table,#rejected-table,#viewed-section .viewed-table){width:100%;min-width:1180px!important;table-layout:fixed}
+body[data-page] :is(#listing-table,#rejected-table,#viewed-section .viewed-table) :is(th,td){font-size:16px;line-height:1.5;white-space:normal!important}
+body[data-page] :is(#listing-table,#rejected-table,#viewed-section .viewed-table) th{font-size:14px;letter-spacing:0;text-transform:none}
+body[data-page] :is(#listing-table,#rejected-table,#viewed-section .viewed-table) th:nth-child(n){width:auto}
+body[data-page=all] :is(#listing-table,#rejected-table) th:nth-child(1){width:19%}
+body[data-page=all] :is(#listing-table,#rejected-table) th:nth-child(2){width:124px}
+body[data-page=all] :is(#listing-table,#rejected-table) th:nth-child(4){width:18%}
+body[data-page=all] :is(#listing-table,#rejected-table) th:nth-child(11){width:13%}
+body[data-page=ours] #viewed-section .viewed-table th:nth-child(1){width:18%}
+body[data-page=ours] #viewed-section .viewed-table th:nth-child(2){width:124px}
+body[data-page=ours] #viewed-section .viewed-table th:nth-child(3){width:18%}
+body[data-page=ours] #viewed-section .viewed-table th:nth-child(5){width:202px}
+body[data-page=ours] #viewed-section .viewed-table th:nth-child(7){width:18%}
+body[data-page] :is(td small,.note,.property-history,.review-meta,.review-saving,.visit-meta,.visit-date-status,.visit-record,.visit-record strong,.characteristics>p,.viewed-group-label,.compare-choice){font-size:14px}
+body[data-page] :is(.review-select,.realtor-select,.realtor-comment,.family-comment,.viewed-stage-select,.selection-toggle,.visit-actions button,.viewing-result-cell>button){font-size:16px;min-height:44px;max-width:100%;white-space:normal}
+body[data-page] :is(.object-cell details,.object-cell summary,.comment-history summary,.characteristics>summary){font-size:14px;min-height:44px}
+body[data-page] .object-cell .characteristics>summary{display:flex;align-items:center}
+.membership-label{display:inline-block;font-size:14px;font-weight:650;border:1px solid #8cb5d8;border-radius:6px;background:#d9eafa;color:#254b70;padding:3px 7px;margin:7px 0}
+body[data-page=all] tr.in-our-list:not(.review-rejected) td{background:#e9f3fc;color:#263d37}
+.listing-controls{display:flex;gap:14px;align-items:end;flex-wrap:wrap;margin:14px 0}
+.listing-controls label{flex:1 1 240px;margin:0;font-size:14px}
+.listing-controls input,.listing-controls select{display:block;margin-top:6px;width:100%}
+.mobile-sort-label{display:none}
+.property-comment{min-width:0;max-width:100%}
+.comment-body{font-size:16px!important;line-height:1.55;margin:9px 0;white-space:pre-wrap;overflow-wrap:anywhere}
+.comment-collapsed{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.comment-display small{display:block;font-size:14px!important;color:#627067;margin:8px 0}
+.comment-display>button{display:block;max-width:100%;margin:6px 0;font-size:16px}
+.comment-editor{display:grid;grid-template-columns:minmax(0,1fr);gap:9px;margin:8px 0}
+.comment-editor textarea,.comment-editor select{width:100%;min-width:0;max-width:100%;font:inherit;font-size:16px;padding:9px;border:1px solid #b8c5b7;border-radius:7px;background:#fffefa;color:#263d37}
+.comment-editor textarea{resize:vertical;min-height:120px;scroll-margin-block:25vh}
+.comment-actions{display:flex;gap:8px;flex-wrap:wrap}
+.comment-actions button{flex:1 1 100px}
+.comment-error,.comment-remote{font-size:14px;white-space:pre-wrap;overflow-wrap:anywhere;margin:0}
+.comment-error:empty{display:none}
+.comment-conflict{padding:9px;border:1px solid #ca9b61;border-radius:7px;background:#fff4dc}
+.comment-conflict button{margin-top:8px;white-space:normal;max-width:100%}
+.comment-history-entry{border-top:1px solid #cbd4c2;padding:9px 0}
+.comment-history-entry p{font-size:16px;margin:6px 0;white-space:pre-wrap;overflow-wrap:anywhere}
+.comment-history-entry small{font-size:14px}
+.property-comment .comment-history{font-size:14px}
+.visit-date-editor{max-width:100%}
+body[data-page] .visit-date-input{font-size:16px;min-height:44px;height:44px}
+.visit-date-control{flex:0 1 124px;width:124px}
+.visit-date-picker{width:32px;max-width:32px;height:40px;min-height:40px}
+.visit-date-input{padding-right:34px}
+.visit-date-clear,.visit-date-ok{font-size:14px;min-height:44px;height:44px}
+body[data-page] .sort-button{font-size:14px;min-height:44px}
+body[data-page] .compare-choice{min-height:44px}
+body[data-page] :is(.visit-record,.visit-record strong,.visit-history>summary){font-size:14px}
+@media(max-width:900px){
+  main{padding:18px 12px}
+  header{gap:10px}
+  .brand-logo{height:44px;max-width:145px}
+  .identity{font-size:14px;max-width:55%}
+  .page-nav a{flex:1 1 145px;min-width:0;font-size:16px}
+  .mobile-sort-label{display:block}
+  .listing-controls{display:grid;grid-template-columns:minmax(0,1fr)}
+  .listing-controls label{min-width:0}
+  body[data-page] :is(.table-wrap,.rejected-wrap,.viewed-wrap){overflow:visible;min-width:0;width:100%}
+  body[data-page] :is(#listing-table,#rejected-table,#viewed-section .viewed-table){display:block;min-width:0!important;width:100%;max-width:100%}
+  body[data-page] :is(#listing-table,#rejected-table,#viewed-section .viewed-table) thead{display:none}
+  body[data-page] :is(#listing-table,#rejected-table,#viewed-section .viewed-table) tbody{display:flex;flex-direction:column;gap:16px;width:100%}
+  body[data-page] :is(#listing-table,#rejected-table,#viewed-section .viewed-table) tr{display:flex;flex-direction:column;min-width:0;width:100%;max-width:100%;padding:14px;border:1px solid #cad4c3;border-radius:10px;background:#fffefa}
+  body[data-page] :is(#listing-table,#rejected-table,#viewed-section .viewed-table) td{display:block;min-width:0;width:100%!important;max-width:100%;padding:7px 0;border:0;box-shadow:none}
+  body[data-page] :is(#listing-table,#rejected-table,#viewed-section .viewed-table) td::before{content:attr(data-label);display:block;font-size:14px;font-weight:650;margin-bottom:5px;color:#52645a}
+  body[data-page] :is(#listing-table,#rejected-table,#viewed-section .viewed-table) :is(.photo-cell,.object-cell,.listing-col-1)::before{display:none}
+  .realtor-cell{order:0}.photo-cell{order:1}.object-cell{order:2}.listing-col-1{order:3}.listing-col-3{order:4}
+  .listing-col-4{order:5}.listing-col-10{order:6}.viewing-date-cell{order:6}.viewing-result-cell{order:7}.family-comment-cell{order:8}.selection-stage-cell{order:9}
+  body[data-page=all] :is(.listing-col-5,.listing-col-6,.listing-col-7,.listing-col-9){display:none!important}
+  body[data-page=all] tr.in-our-list:not(.review-rejected){background:#e9f3fc}
+  body[data-page] tr.review-rejected{background:#faeeeb}
+  body[data-page] tr.viewed-planned{background:#fffefa;border-left:5px solid #8a9690}
+  body[data-page] tr.viewed-liked{background:#e9f3fc;border-left:5px solid #4986b5}
+  body[data-page] tr.viewed-documents{background:#e9f5e7;border-left:5px solid #4c8951}
+  body[data-page] tr.viewed-rejected{background:#fbeceb;border-left:5px solid #bd635c}
+  body[data-page] .viewed-group{padding:10px}
+  body[data-page] :is(.viewed-group,.panel,.section-head,.cover-dialog-head){min-width:0;max-width:100%}
+  .section-head{flex-wrap:wrap}
+  body[data-page] .property-comment :is(button,input,select){min-height:44px}
+  body[data-page] .visit-date-editor{width:100%;flex-wrap:wrap;gap:8px}
+  body[data-page] .visit-date-control{flex:1 1 150px;min-width:150px;max-width:200px}
+  body[data-page] .visit-date-picker{width:44px;max-width:44px;min-height:44px;height:44px;top:0;right:0}
+  body[data-page] .visit-date-input{padding-right:46px}
+  .visit-date-actions{flex-direction:row;flex:1 1 140px;width:auto;min-width:0}
+  .visit-date-actions button{min-width:64px;flex:1}
+  body[data-page] .visit-calendar{width:min(352px,calc(100vw - 8px));padding:8px}
+  body[data-page] .visit-calendar table{border-spacing:0}
+  body[data-page] .visit-calendar button{min-height:44px;height:44px;font-size:16px}
+  body[data-page] .visit-calendar-head button{width:44px;flex-basis:44px}
+}

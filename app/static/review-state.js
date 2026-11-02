@@ -14,10 +14,12 @@
   }
   function merge(previous, incoming) {
     const result = {...incoming};
-    if (previous) for (const [version,fields] of [['selection_version',['in_our_list','selection_version']],['review_version',reviewFields],['realtor_version',realtorFields],['visits_version',['visits','visits_version','viewing_documents_ready','viewed_group']]]) {
+    if (previous) for (const [version,fields] of [['family_comment_version',['family_comment','family_comment_version','family_comment_updated_at','family_comment_updated_by','family_comment_updated_by_name']],['selection_version',['in_our_list','selection_version']],['review_version',reviewFields],['realtor_version',realtorFields],['visits_version',['visits','visits_version','viewing_documents_ready','viewed_group']]]) {
       if (Number(previous[version] || 0) > Number(incoming[version] || 0))
         for (const key of fields) result[key] = previous[key];
     }
+    if(previous?.comment_history||incoming.comment_history)
+      result.comment_history=[...new Map([...(previous?.comment_history||[]),...(incoming.comment_history||[])].map(h=>[h.id,h])).values()].sort((a,b)=>b.id-a.id);
     return result;
   }
   function numeric(value) {
@@ -72,7 +74,7 @@
   }
   function section(item,page='all') {
     if(page==='ours')return item.in_our_list?(viewedGroup(item)||'planned'):null;
-    return item.in_our_list?null:(effectiveStatus(item)==='rejected'?'refused':'main');
+    return effectiveStatus(item)==='rejected'?'refused':'main';
   }
   function comparisonEligible(item) { return effectiveStatus(item)!=='rejected'&&viewedGroup(item)!=='rejected'; }
   function displayVisit(item) { return nextVisit(item) || latestCompleted(item); }

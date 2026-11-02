@@ -8,7 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 from openpyxl import load_workbook
 
-from tests.helpers import sign_in
+from tests.helpers import sign_in, post_realtor
 from tests.test_multiuser import multi_app, reviewer_client
 from tests.test_phase3 import sample
 from tests.test_viewings import current, create, payload
@@ -34,7 +34,7 @@ def test_result_not_family_or_realtor_status_controls_group(multi_app):
     assert current(admin)['viewed_group'] is None
     admin.post('/api/listings/123/review',json={'status':'liked'})
     assert current(admin)['viewed_group'] is None
-    admin.post('/api/listings/123/realtor-review',json={'status':'rejected','comment':'Проверить документы'})
+    post_realtor(admin,'/api/listings/123/realtor-review',json={'status':'rejected','comment':'Проверить документы'})
     assert current(admin)['viewed_group'] is None
     item=create(admin,status='completed',outcome='liked',completed_at='2026-10-20T10:00:00Z')
     assert item['viewed_group']=='liked'
@@ -128,7 +128,7 @@ def test_classification_roles_csrf_stale_property_and_concurrent_edits(multi_app
     with ThreadPoolExecutor(max_workers=2) as pool:
         assert sorted(pool.map(save,range(2)))==[200,409]
     assert current(admin)['viewed_group']=='documents'
-    assert buyer.post('/api/listings/123/realtor-review',json={'status':'approved','comment':''}).status_code==403
+    assert post_realtor(buyer,'/api/listings/123/realtor-review',json={'status':'approved','comment':''}).status_code==403
 
 
 @pytest.mark.parametrize('changes',[{'documents_ready':'true'},{'documents_ready':1},

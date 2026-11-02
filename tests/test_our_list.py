@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 from openpyxl import load_workbook
 
-from tests.helpers import sign_in
+from tests.helpers import sign_in, post_realtor
 from tests.test_multiuser import multi_app, reviewer_client
 from tests.test_phase3 import sample
 from tests.test_viewings import current, create
@@ -24,7 +24,7 @@ def choose(client,item,selected=True,url=URL):
 
 def test_two_urls_share_session_and_expose_only_their_tools(multi_app):
     main,admin=multi_app
-    for path,mode,count in [('/','all',24),('/ours','ours',28)]:
+    for path,mode,count in [('/','all',22),('/ours','ours',32)]:
         response=admin.get(path)
         assert response.status_code==200 and response.headers['cache-control']=='no-store'
         html=response.text
@@ -57,7 +57,7 @@ def test_membership_is_independent_preserves_history_and_survives_restart(multi_
     assert same['selection_version']==1
     item=create(admin,status='completed',outcome='rejected',comment='Сохраняем историю',preparation='Старая заметка')
     assert item['in_our_list'] and item['viewed_group']=='rejected'
-    admin.post('/api/listings/123/realtor-review',json={'status':'rejected','comment':'Документы'})
+    post_realtor(admin,'/api/listings/123/realtor-review',json={'status':'rejected','comment':'Документы'})
     item=current(admin);history=item['visits'];version=item['visits_version']
     removed=choose(admin,item,False).json()
     assert not removed['in_our_list'] and removed['review_status']=='rejected'
@@ -102,7 +102,7 @@ def test_membership_permissions_csrf_conflicts_and_concurrent_requests(multi_app
     with ThreadPoolExecutor(max_workers=2) as pool:
         assert sorted(pool.map(run,range(2)))==[200,409]
     assert not current(admin)['in_our_list']
-    assert buyer.post('/api/listings/123/realtor-review',json={'status':'approved'}).status_code==403
+    assert post_realtor(buyer,'/api/listings/123/realtor-review',json={'status':'approved'}).status_code==403
 
 
 @pytest.mark.parametrize('changes',[{'selected':1},{'selected':'true'},{'selected':None},

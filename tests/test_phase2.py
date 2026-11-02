@@ -15,7 +15,7 @@ from app.auth import COOKIE, HASHER, digest
 from app.criteria import browser_criteria
 from app.finance import mortgage_payment
 from app.csv_source import travel_duration
-from tests.helpers import sign_in, login_attempt
+from tests.helpers import sign_in, login_attempt, post_realtor
 from tests.test_multiuser import multi_app
 
 
@@ -222,8 +222,8 @@ def test_realtor_roles_independent_statuses_and_refresh_xlsx(multi_app,caplog):
             assert 'PRIVATE_BROWSER_ERROR' not in json.dumps(state)
         assert family.post('/api/listings/123/review',json={'status':'liked'}).status_code==200
         assert agent.post('/api/listings/123/review',json={'status':'viewed'}).status_code==403
-        assert family.post('/api/listings/123/realtor-review',json={'status':'approved'}).status_code==403
-        saved=agent.post('/api/listings/123/realtor-review',json={'status':'rejected','comment':secret_comment}).json()
+        assert post_realtor(family,'/api/listings/123/realtor-review',json={'status':'approved'}).status_code==403
+        saved=post_realtor(agent,'/api/listings/123/realtor-review',json={'status':'rejected','comment':secret_comment}).json()
         assert saved['review_status']=='liked' and saved['realtor_status']=='rejected'
         assert saved['realtor_updated_by']==realtor['id']
         assert saved['realtor_updated_by_name']=='Имя realtor'
@@ -235,12 +235,12 @@ def test_realtor_roles_independent_statuses_and_refresh_xlsx(multi_app,caplog):
                              ('/api/users',{})]:
             assert agent.post(path,json=payload).status_code==403
         assert agent.patch('/api/users/1',json={'enabled':False}).status_code==403
-        assert agent.post('/api/listings/missing/realtor-review',json={'status':'pending'}).status_code==404
-        assert agent.post('/api/listings/123/realtor-review',json={'status':'bad'}).status_code==422
-        assert agent.post('/api/listings/123/realtor-review',json={'status':'approved','comment':'bad\x00text'}).status_code==422
-        assert agent.post('/api/listings/123/realtor-review',json={'status':'approved','comment':'x'*2001}).status_code==422
+        assert post_realtor(agent,'/api/listings/missing/realtor-review',json={'status':'pending'}).status_code==404
+        assert post_realtor(agent,'/api/listings/123/realtor-review',json={'status':'bad'}).status_code==422
+        assert post_realtor(agent,'/api/listings/123/realtor-review',json={'status':'approved','comment':'bad\x00text'}).status_code==422
+        assert post_realtor(agent,'/api/listings/123/realtor-review',json={'status':'approved','comment':'x'*2001}).status_code==422
         for headers in ({'X-CSRF-Token':'bad'},{'Origin':'https://evil.test'},{'Sec-Fetch-Site':'cross-site'}):
-            assert agent.post('/api/listings/123/realtor-review',json={'status':'approved'},headers=headers).status_code==403
+            assert post_realtor(agent,'/api/listings/123/realtor-review',json={'status':'approved'},headers=headers).status_code==403
         with main.database() as conn:
             main.save_items(conn,[{'id':'123','price':13000000,'source':'ЦИАН browser'}],'2026')
         preview=admin.post('/api/import/preview',content=b'url;price\nhttps://cian.ru/sale/flat/123/;12500000').json()
@@ -250,14 +250,14 @@ def test_realtor_roles_independent_statuses_and_refresh_xlsx(multi_app,caplog):
             assert row[key]==saved[key]
         assert row['mortgage_payment']==pytest.approx(mortgage_payment(12500000))
         assert admin.post('/api/listings/123/review',json={'status':'viewed'}).status_code==200
-        assert admin.post('/api/listings/456/realtor-review',json={'status':'approved','comment':'=SUM(1,2)'}).status_code==200
+        assert post_realtor(admin,'/api/listings/456/realtor-review',json={'status':'approved','comment':'=SUM(1,2)'}).status_code==200
         book=load_workbook(io.BytesIO(admin.get('/api/export.xlsx').content))
         data=list(book.active.values)
         exported=dict(zip(data[0],next(row for row in data[1:] if row[0]=='456')))
         assert exported['Оценка риелтора']=='approved'
         assert exported['Комментарий риелтора']=="'=SUM(1,2)"
         assert exported['Ипотека / мес. (6 млн / 18% / 15 лет)']==pytest.approx(mortgage_payment(12000000))
-        assert admin.post('/api/listings/123/realtor-review',json={'status':'pending','comment':''}).json()['realtor_comment']==''
+        assert post_realtor(admin,'/api/listings/123/realtor-review',json={'status':'pending','comment':''}).json()['realtor_comment']==''
         # Session revocation applies equally to the third role.
         assert admin.patch('/api/users/'+str(realtor['id']),json={'enabled':False}).status_code==200
         assert agent.get('/api/state').status_code==401

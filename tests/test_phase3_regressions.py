@@ -13,7 +13,7 @@ from openpyxl import load_workbook
 
 from app.auth import COOKIE, HASHER, digest
 from app.property_match import listing_match, best_match, merge_properties
-from tests.helpers import sign_in
+from tests.helpers import sign_in, post_realtor
 from tests.test_multiuser import multi_app
 from tests.test_phase3 import sample, decide
 
@@ -200,7 +200,7 @@ def test_family_and_realtor_inheritance_versions_and_audit(multi_app):
         snapshots=[json.loads(row[0]) for row in conn.execute('SELECT review_snapshot FROM property_merge_audit')]
         assert {row['realtor_comment'] for row in snapshots}=={'Комментарий А','Комментарий Б'}
     assert admin.post('/api/listings/160/review',json={'status':'liked'}).json()['review_version']==102
-    assert admin.post('/api/listings/160/realtor-review',json={'status':'rejected','comment':'Новый'}).json()['realtor_version']==202
+    assert post_realtor(admin,'/api/listings/160/realtor-review',json={'status':'rejected','comment':'Новый'}).json()['realtor_version']==202
     with main.database() as conn:
         assert {row[0] for row in conn.execute("SELECT review_version FROM listings WHERE id IN ('160','161')")}=={102}
         assert {row[0] for row in conn.execute("SELECT realtor_version FROM listings WHERE id IN ('160','161')")}=={202}
@@ -212,7 +212,7 @@ def test_csv_preview_is_readonly_and_browser_counts_properties(multi_app,monkeyp
     old=sample('170')
     saved(main,old,now='2026-10-01T00:00:00+00:00')
     assert admin.post('/api/listings/170/review',json={'status':'liked'}).status_code==200
-    assert admin.post('/api/listings/170/realtor-review',json={'status':'approved','comment':'Сохранить'}).status_code==200
+    assert post_realtor(admin,'/api/listings/170/realtor-review',json={'status':'approved','comment':'Сохранить'}).status_code==200
     text=io.StringIO();writer=csv.DictWriter(text,fieldnames=list(old),delimiter=';');writer.writeheader()
     writer.writerow(dict(old,id='171',url='https://cian.ru/sale/flat/171/',price=12500000))
     with main.database() as conn:
