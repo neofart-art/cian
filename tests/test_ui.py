@@ -445,6 +445,7 @@ def test_cover_column_modal_placeholder_refresh_and_hidden_marketing(tmp_path,mo
                 assert 'NEVER_SHOW_MARKETING' not in await page.locator('#cover-dialog').inner_text()
                 await page.locator('#cover-close').click()
                 await expect(page.locator('#cover-dialog')).to_be_hidden()
+                await row.locator('.characteristics > summary').click()
                 await row.locator('.publication-details > summary').click()
                 await expect(row.locator('.publication-details p')).to_contain_text('CIAN 8100')
                 await row.locator('.review-select').select_option('liked')
