@@ -415,3 +415,8 @@ body[data-page] .visit-date-actions button{min-width:80px}
  body[data-page=all] .results :is(#listing-table,#rejected-table) th:nth-child(10){width:120px}
  body[data-page=all] .results :is(#listing-table,#rejected-table) th:nth-child(11){width:150px}
 }
+
+body[data-page] :is(.cover-placeholder,.compare-placeholder,footer){font-size:14px}
+body[data-page] .duplicate-box{font-size:16px}
+body[data-page] .duplicate-actions button{font-size:16px;min-height:44px}
+body[data-page] #compare-table :is(th,td){font-size:16px}
