@@ -34,7 +34,8 @@ async function apiFetch(url, options = {}) {
   return response;
 }
 async function responseJson(response) {
-  const data = await response.json();
+  let data;
+  try{data=await response.json();}catch(_){throw new Error('Сервер вернул неполный ответ (HTTP '+response.status+'). Повторите запрос.');}
   if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail :
     (response.status===422?'Не удалось сохранить: проверьте поля и обновите страницу, если открыта старая версия формы.':'Не удалось выполнить запрос. Попробуйте ещё раз.'));
   return data;
@@ -269,6 +270,7 @@ document.querySelector('#listing-search')?.addEventListener('input',event=>{
 });
 function renderListings() {
   if(!listLoaded)return;
+  performance.mark('xata-render-start');
   const all=XataReview.ordered(records.values(),selectedSort);
   const pageItems=all.filter(item=>XataReview.section(item,pageMode)!==null);
   const ordered=pageItems.filter(matchesSearch);
@@ -318,12 +320,13 @@ function renderListings() {
   empty.hidden=ourPage?ordered.length>0:(counts[selectedFilter]||0)>0;
   setText(empty,ourPage?'В нашем списке пока нет квартир. Выберите варианты на странице «Все объявления».':
     active.length?'Нет объявлений с выбранным статусом.':'В основном списке пока нет объявлений.');
+  performance.clearMeasures('xata-list-render');performance.measure('xata-list-render','xata-render-start');performance.clearMarks('xata-render-start');
 }
 
 function acceptListing(item) {
   if (Number(item.identity_revision || 0) < identityRevision) return;
   if(item.feed_epoch===feedEpoch&&Number(item.feed_revision??feedRevision)<feedRevision)return;
-  if(item.feed_epoch){feedEpoch=item.feed_epoch;feedRevision=Math.max(feedRevision,Number(item.feed_revision||0));}
+  if(item.feed_epoch){feedRevision=item.feed_epoch===feedEpoch?Math.max(feedRevision,Number(item.feed_revision||0)):Number(item.feed_revision||0);feedEpoch=item.feed_epoch;}
   identityRevision = Math.max(identityRevision,Number(item.identity_revision || 0));
   const key = XataReview.key(item);
   const previous=records.get(key);
@@ -425,13 +428,16 @@ async function ensureDetails(key,force=false){
   if(detailRequests.has(key))return detailRequests.get(key);
   if(!force&&detailFailures.has(key)&&Date.now()-detailFailures.get(key)<10000)throw new Error('Подробности недоступны. Повторите открытие через несколько секунд.');
   const task=(async()=>{
+    const controller=new AbortController();let expired=false;
+    const timer=setTimeout(()=>{expired=true;controller.abort();},15000);
     try{
-      const data=await responseJson(await apiFetch('/api/listings/'+encodeURIComponent(item.id)+'/details'));
+      const data=await responseJson(await apiFetch('/api/listings/'+encodeURIComponent(item.id)+'/details',{signal:controller.signal}));
+      if(data.property_id!==item.property_id){await refresh(true);throw new Error('Квартира объединена с другой записью. Повторите открытие.');}
       if(data.feed_epoch===feedEpoch&&data.feed_revision<feedRevision)throw new Error('Подробности обновились. Повторите открытие.');
       acceptListing(data);detailFailures.delete(key);renderListings();
       return records.get(key);
-    }catch(error){detailFailures.set(key,Date.now());throw error;}
-    finally{detailRequests.delete(key);}
+    }catch(error){detailFailures.set(key,Date.now());throw expired?new Error('Подробности не загрузились за 15 секунд. Повторите открытие.'):error;}
+    finally{clearTimeout(timer);detailRequests.delete(key);}
   })();
   detailRequests.set(key,task);return task;
 }
@@ -450,7 +456,8 @@ async function refresh(force=false){
   try{await refreshPromise;}finally{refreshPromise=null;}
 }
 async function refreshState(force=false) {
-  refreshing = true;
+  refreshing = true;let expired=false;
+  const timer=setTimeout(()=>{expired=true;refreshController?.abort();},20000);
   try {
     refreshController=new AbortController();
     const response=await apiFetch('/api/state?view='+pageMode,{signal:refreshController.signal,
@@ -478,7 +485,7 @@ async function refreshState(force=false) {
     }
     loadingComplete();renderListings();
     for(const [key,entry] of rows){
-      if(!records.get(key)?.details_loaded&&(entry.historyDetails.open||entry.familyDetails.open||realtorUI.needsDetails(key)||familyUI.needsDetails(key)||entry.row.querySelector('.visit-history[open]'))&&!detailRequests.has(key)&&!detailFailures.has(key))loadRowDetails(key,entry.historyText);
+      if(!records.get(key)?.details_loaded&&(entry.historyDetails.open||entry.familyDetails.open||realtorUI.needsDetails(key)||familyUI.needsDetails(key)||comparisonUI?.needsDetails(key)||entry.row.querySelector('.visit-history[open]'))&&!detailRequests.has(key)&&!detailFailures.has(key))loadRowDetails(key,entry.historyText);
     }
     if (currentUser.role !== 'admin' || ourPage) return;
     const browser = data.browser || {};
@@ -491,8 +498,8 @@ async function refreshState(force=false) {
     status.className = run?.status === 'error' ? 'error' : run?.status === 'blocked' ? 'blocked' : '';
     setText(status, run ? run.message + (run.status === 'done' ? ' Получено: ' + run.count + '.' : '') + '\nНачало: ' + new Date(run.started).toLocaleString('ru-RU') : 'Сбор ещё не запускался.');
     button.disabled = pending || run?.status === 'running';
-  } catch(error) { setLoadError(error); }
-  finally { refreshing = false;refreshController=null; }
+  } catch(error) { setLoadError(expired?new Error('Список не загрузился за 20 секунд. Повторите запрос.'):error); }
+  finally { clearTimeout(timer);refreshing = false;refreshController=null; }
 }
 form?.addEventListener('submit', async event => {
   event.preventDefault(); pending = true; button.disabled = true;

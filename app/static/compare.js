@@ -81,5 +81,5 @@ globalThis.XataCompare={create({getItem,render,ensureDetails}) {
   openButton.addEventListener('click',async()=>{openButton.disabled=true;try{await Promise.all([...selected].map(key=>ensureDetails(key,true)));sync();if(selected.size>=2){signature='';showTable();dialog.showModal();}}catch(e){announce(e.message);}finally{sync();}});
   document.querySelector('#compare-close').addEventListener('click',()=>dialog.close());
   document.querySelector('#compare-clear').addEventListener('click',()=>{selected.clear();render();});
-  return {toggle,sync,has:key=>selected.has(key)};
+  return {toggle,sync,has:key=>selected.has(key),needsDetails:key=>dialog.open&&selected.has(key)};
 }};

@@ -8,7 +8,7 @@ globalThis.XataVisits = {create({getItem,getUser,saveItem,request,jsonOptions,re
   const format=value=>value && Number.isFinite(Date.parse(value)) ? new Date(value).toLocaleString('ru-RU',{timeZone:zone,day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}) : '—';
   const canEdit=()=>['admin','reviewer'].includes(getUser()?.role);
   const canEditDate=()=>['admin','realtor'].includes(getUser()?.role);
-  const dateEditors=new WeakMap();
+  const dateEditors=new WeakMap(),commentOpen=new Set();
   function el(tag,text,cls) {const n=document.createElement(tag);if(text!=null)n.textContent=text;if(cls)n.className=cls;return n;}
   function button(text,action) {const b=el('button',text,'secondary compact');b.type='button';b.addEventListener('click',action);return b;}
   const dialog=document.querySelector('#visit-dialog'),form=document.querySelector('#visit-form');
@@ -114,7 +114,14 @@ globalThis.XataVisits = {create({getItem,getUser,saveItem,request,jsonOptions,re
     box.append(el('strong',format(visit.status==='completed'?visit.completed_at:visit.scheduled_at)),
       el('div',outcomes[visit.outcome]||states[visit.status],'visit-state'));
     if(XataReview.overdue(visit))box.append(el('small','Укажите результат просмотра','visit-overdue'));
-    if(visit.comment) {const d=el('details');d.append(el('summary','После просмотра'),el('p',visit.comment));box.append(d);}
+    if(visit.comment) {
+      const d=el('details'),key=XataReview.key(item),commentKey=key+':'+visit.id;
+      d.open=commentOpen.has(commentKey);d.append(el('summary','После просмотра'),el('p',visit.comment));
+      d.addEventListener('toggle',async()=>{
+        if(d.open)commentOpen.add(commentKey);else commentOpen.delete(commentKey);
+        if(d.open&&visit.comment_truncated){try{await ensureDetails(key,true);}catch(e){d.append(el('p',e.message,'error'));}}
+      });box.append(d);
+    }
     const labels=(visit.rejection_reasons||[]).map(value=>reasons[value]).filter(Boolean);
     if(labels.length)box.append(el('p','Причины отказа: '+labels.join(', '),'visit-rejection-reasons'));
     box.append(el('small',(visit.updated_by_name||visit.updated_by_username||'—')+' · '+format(visit.updated_at),'visit-meta'));

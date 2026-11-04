@@ -106,7 +106,7 @@ def summaries(conn,view,cover_sources):
         if row['property_id'] in items:
             items[row['property_id']]['visit_count']=row['n']
     for row in conn.execute('''SELECT v.id,v.property_id,v.scheduled_at,v.status,v.outcome,v.completed_at,
-        v.updated_at,v.updated_by,v.version,substr(v.comment,1,160) AS comment,v.rejection_reasons,
+        v.updated_at,v.updated_by,v.version,substr(v.comment,1,160) AS comment,length(v.comment)>160 AS comment_truncated,v.rejection_reasons,
         u.display_name AS updated_by_name,u.username AS updated_by_username
         FROM property_visits v JOIN properties p ON p.id=v.property_id JOIN users u ON u.id=v.updated_by
         WHERE p.merged_into IS NULL'''+visit_scope+''' AND

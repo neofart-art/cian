@@ -34,7 +34,12 @@ def private_json(path,value):
 
 
 def snapshot(container,output):
-    os.umask(0o077)
+    previous=os.umask(0o077)
+    try:return _snapshot(container,output)
+    finally:os.umask(previous)
+
+
+def _snapshot(container,output):
     info=json.loads(command('docker','inspect',container))[0]
     work=validate(info)
     output=Path(output).resolve()

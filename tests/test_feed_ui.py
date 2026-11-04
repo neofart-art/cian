@@ -91,6 +91,12 @@ def test_slow_large_lists_loading_retry_single_flight_and_realtor_save(large_app
                 await expect(page.locator('#nav-ours-count')).to_have_text('20')
                 assert await page.locator('tr[data-property-id]').count()==(20 if path=='/ours' else 500)
                 assert len(detail_reads)==0,'Histories must not load on initial listing'
+                render_ms=await page.evaluate("performance.getEntriesByName('xata-list-render').at(-1).duration")
+                metrics={'engine':engine,'width':width,'page':path,'rows':20 if path=='/ours' else 500,'render_ms':round(render_ms,3),'network':'bridge with 150 ms delay and 256 KiB/s body-size delay; not physical device'}
+                print('XATA_UI_METRICS:'+json.dumps(metrics,ensure_ascii=False))
+                if os.getenv('UI_SCREENSHOT_DIR'):
+                    destination=Path(os.environ['UI_SCREENSHOT_DIR']);destination.mkdir(parents=True,exist_ok=True)
+                    (destination/(engine+'-'+str(width)+'-'+('ours' if path=='/ours' else 'all')+'-metrics.json')).write_text(json.dumps(metrics,ensure_ascii=False,indent=2))
                 assert await page.evaluate('document.documentElement.scrollWidth<=innerWidth')
                 row=page.locator('tr[data-listing-id="800001"]')
                 await row.locator('.realtor-edit').click()
@@ -139,6 +145,7 @@ def test_slow_large_lists_loading_retry_single_flight_and_realtor_save(large_app
                     await expect(control).to_have_value('12.12.2030')
                     assert len(writes)==before
                     await row.locator('.visit-date-ok').click()
+                    await expect(row.locator('.visit-date-status')).to_have_text('Дата сохранена.')
                     await expect(control).to_have_value('12.12.2030')
                     await page.reload()
                     await expect(row.locator('.visit-date-input')).to_have_value('12.12.2030')

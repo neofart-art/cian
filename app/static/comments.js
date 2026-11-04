@@ -1,6 +1,23 @@
 /* One comment editor per property: refresh updates data, never live drafts. */
 (function(root){
 'use strict';
+// Read all comment heights together before changing any "more" buttons.
+// Hundreds of per-row read/write pairs otherwise force repeated table layouts.
+const measurements=new Map();let measurementFrame=false;
+function scheduleMeasurement(state,getItem,key,family){
+  measurements.set(state,()=>{
+    const item=getItem(key),value=item?.[family?'family_comment':'realtor_comment']||'';
+    return !value||(!item?.[family?'family_comment_truncated':'realtor_comment_truncated']&&!state.expanded&&state.body.scrollHeight<=state.body.clientHeight+1);
+  });
+  if(measurementFrame)return;
+  measurementFrame=true;
+  requestAnimationFrame(()=>{
+    measurementFrame=false;
+    const changes=[...measurements].map(([state,read])=>[state,read()]);
+    measurements.clear();
+    for(const [state,hidden] of changes)state.more.hidden=hidden;
+  });
+}
 function create({kind,getItem,getUser,request,jsonOptions,accept,refresh,render,ensureDetails}) {
   const family=kind==='family', prefix=family?'family':'realtor';
   const cells=new Map();
@@ -81,10 +98,9 @@ function create({kind,getItem,getUser,request,jsonOptions,accept,refresh,render,
     const canEdit=family?['admin','reviewer'].includes(getUser()?.role):['admin','realtor'].includes(getUser()?.role);
     s.display.hidden=s.editing;s.form.hidden=!s.editing;
     text(s.body,value||'—');s.body.classList.toggle('comment-collapsed',!s.expanded);
-    const measure=()=>{s.more.hidden=!value||(!item[family?'family_comment_truncated':'realtor_comment_truncated']&&!s.expanded&&s.body.scrollHeight<=s.body.clientHeight+1);};
     text(s.more,s.expanded?'Свернуть':'Читать полностью');
-    requestAnimationFrame(measure);
-    if(!s.resize&&typeof ResizeObserver!=='undefined'){s.resize=new ResizeObserver(()=>{if(!s.editing){const v=getItem(key)?.[family?'family_comment':'realtor_comment']||'';s.more.hidden=!v||(!getItem(key)?.[family?'family_comment_truncated':'realtor_comment_truncated']&&!s.expanded&&s.body.scrollHeight<=s.body.clientHeight+1);}});s.resize.observe(s.body);}
+    scheduleMeasurement(s,getItem,key,family);
+    if(!s.resize&&typeof ResizeObserver!=='undefined'){s.resize=new ResizeObserver(()=>{if(!s.editing)scheduleMeasurement(s,getItem,key,family);});s.resize.observe(s.body);}
     const date=item[family?'family_comment_updated_at':'realtor_updated_at'];
     const author=family?item.family_comment_updated_by_name:(item.realtor_updated_by_name||item.realtor_updated_by_username);
     text(s.meta,date?stamp(author,date):'');s.meta.hidden=!date;

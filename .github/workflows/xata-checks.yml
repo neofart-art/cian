@@ -23,7 +23,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install test dependencies
-        run: python -m pip install -r requirements-app.txt -r requirements-browser.txt pytest==8.3.5
+        run: python -m pip install -r requirements-app.txt -r requirements-browser.txt pytest==8.3.5 pytest-timeout==2.3.1
       - name: Prepare immutable previous app for additive rollback regression
         run: |
           git fetch --no-tags --depth=1 origin 3d72b59d6d296f032b0396aa79e9bdb4cf6c42f0
@@ -62,7 +62,7 @@ jobs:
       - name: Offline DOM and persistent-profile tests
         env:
           UI_SCREENSHOT_DIR: artifacts/ui-screenshots
-        run: RUN_BROWSER_TESTS=1 python -m pytest -q --maxfail=3 tests/test_browser_dom.py tests/test_ui.py tests/test_comments_ui.py tests/test_feed_ui.py
+        run: RUN_BROWSER_TESTS=1 python -m pytest -v --tb=short --timeout=180 --maxfail=3 tests/test_browser_dom.py tests/test_ui.py tests/test_comments_ui.py tests/test_feed_ui.py
       - name: Prepare readable screenshot preview
         if: always()
         run: python tests/screenshot_contact.py

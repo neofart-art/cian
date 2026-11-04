@@ -41,7 +41,8 @@ class JsonGzipMiddleware:
                 chunks.append(message.get('body',b''))
                 if message.get('more_body'):return
                 body=b''.join(chunks);headers=MutableHeaders(scope=start)
-                headers.add_vary_header('Accept-Encoding')
+                if 'accept-encoding' not in {v.strip().lower() for v in headers.get('vary','').split(',')}:
+                    headers.add_vary_header('Accept-Encoding')
                 use_gzip=gz>0 and (len(body)>=self.minimum_size or identity==0)
                 if 'identity' in q and q['identity']>gz:use_gzip=False
                 if use_gzip:
