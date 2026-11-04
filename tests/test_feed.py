@@ -176,3 +176,34 @@ def test_old_browser_tab_is_not_given_a_truncated_editable_comment(multi_app):
     assert client.get('/api/state?view=all',headers={'Sec-Fetch-Site':'same-origin'}).status_code==200
     legacy=client.get('/api/state?full=1',headers={'Sec-Fetch-Site':'same-origin'})
     assert next(i for i in legacy.json()['listings'] if i['id']=='123')['realtor_comment']==value
+
+
+def test_compact_publication_order_and_scalar_data_match_full_details(multi_app):
+    main,client=multi_app
+    with main.database() as conn:
+        pid=conn.execute("SELECT property_id FROM listings WHERE id='123'").fetchone()[0]
+        # Imported historical publications need not arrive in date/ID order.
+        conn.execute("""INSERT INTO listings(id,title,url,address,property_id,first_seen,last_seen)
+            VALUES ('90','Историческая','https://cian.ru/sale/flat/90/','Москва',?,'2019','2019')""",(pid,))
+        conn.execute("""INSERT INTO listings(id,title,url,address,property_id,first_seen,last_seen)
+            VALUES ('80','Историческая','https://cian.ru/sale/flat/80/','Москва',?,'2018','2018')""",(pid,))
+        conn.execute('UPDATE users SET display_name=? WHERE id=1',('',))
+        conn.execute('UPDATE properties SET family_comment_updated_by=1 WHERE id=?',(pid,))
+    summary=next(i for i in client.get('/api/state').json()['listings'] if i['id']=='123')
+    details=current(client)
+    for field in ('listing_ids','first_seen','relist_count','price_min','price_max','viewed_group','in_our_list',
+                  'selection_version','visits_version','family_comment_updated_by_name'):
+        assert summary[field]==details[field],field
+    assert summary['listing_ids']==['80','90','123']
+
+
+def test_validator_includes_public_configuration_and_representation_version(multi_app,monkeypatch):
+    main,client=multi_app
+    first=client.get('/api/state')
+    monkeypatch.setenv('CIAN_SEARCH_URL','https://www.cian.ru/cat.php?maxprice=10000000&foot_min=10')
+    changed=client.get('/api/state',headers={'If-None-Match':first.headers['etag']})
+    assert changed.status_code==200
+    assert changed.json()['criteria']=={'max_price':10000000,'metro_minutes':10}
+    assert changed.json()['feed_revision']==first.json()['feed_revision']
+    monkeypatch.setattr(main.feed,'SOURCE_VERSION','synthetic-new-release')
+    assert client.get('/api/state',headers={'If-None-Match':changed.headers['etag']}).status_code==200

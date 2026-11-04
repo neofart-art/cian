@@ -154,12 +154,20 @@ def test_slow_large_lists_loading_retry_single_flight_and_realtor_save(large_app
                     (destination/(engine+'-'+str(width)+'-'+('ours' if path=='/ours' else 'all')+'-metrics.json')).write_text(json.dumps(metrics,ensure_ascii=False,indent=2))
                 assert await page.evaluate('document.documentElement.scrollWidth<=innerWidth')
                 row=page.locator('tr[data-listing-id="800001"]')
+                if path=='/ours':
+                    await page.clock.set_fixed_time('2030-01-01T12:00:00Z')
+                    await page.evaluate('refresh()')
+                    await expect(row.locator('.viewing-date-cell .visit-overdue')).to_be_hidden()
+                    await page.clock.set_fixed_time('2030-01-02T12:00:00Z')
+                    await page.evaluate('refresh()')
+                    await expect(row.locator('.viewing-date-cell .visit-overdue')).to_be_visible()
                 await row.locator('.realtor-edit').click()
                 await expect(row.locator('.realtor-comment')).to_have_value(('Риелтор проверил квартиру. '*35).strip())
                 assert len(detail_reads)==1
-                draft='Сохранение риелтора: '+('полный текст, не усечённый preview. '*30)
+                draft='Сохранение риелтора: '+('полный текст, не усечённый preview. '*30).rstrip()
                 field=row.locator('.realtor-comment')
                 await field.fill(draft)
+                draft=await field.input_value()  # Preserve the actual browser edit, including WebKit whitespace.
                 await field.evaluate('e=>{e.focus();e.setSelectionRange(9,9)}')
                 await page.evaluate('refresh()')  # conditional 304
                 assert state_reads[-1] is not None

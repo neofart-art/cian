@@ -8,6 +8,7 @@ const records = new Map(), rows = new Map(), pendingReviews = new Set(), pending
 const labels = {new:'НОВОЕ', liked:'Понравилось', viewed:'Просмотрено', rejected:'Не подходит'};
 const realtorLabels = {pending:'Не оценено',approved:'Одобрено',rejected:'Отбраковано'};
 let searchText='', selectedSort = null, identityRevision = 0, refreshPromise = null;
+let renderedMoscowDay=null;
 let listLoaded=false, listTag=null, feedEpoch='', feedRevision=-1, refreshAgain=false, refreshController=null, pollTimer=null;
 let globalTotals={all:null,ours:null};
 const detailRequests=new Map(),detailFailures=new Map();
@@ -270,6 +271,7 @@ document.querySelector('#listing-search')?.addEventListener('input',event=>{
 });
 function renderListings() {
   if(!listLoaded)return;
+  renderedMoscowDay=XataReview.moscowDay(Date.now());
   performance.mark('xata-render-start');
   const all=XataReview.ordered(records.values(),selectedSort);
   const pageItems=all.filter(item=>XataReview.section(item,pageMode)!==null);
@@ -463,6 +465,7 @@ async function refreshState(force=false) {
     const response=await apiFetch('/api/state?view='+pageMode,{signal:refreshController.signal,
       headers:!force&&listTag?{'If-None-Match':listTag}:{}});
     if(response.status===304){
+      if(ourPage&&renderedMoscowDay!==XataReview.moscowDay(Date.now()))renderListings();
       for(const [key,entry] of rows)if(entry.failedCover&&Date.now()-entry.failedCoverAt>=30000)renderRow(records.get(key));
       loadingComplete();return;
     }

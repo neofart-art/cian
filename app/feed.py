@@ -5,6 +5,11 @@ import sqlite3
 import time
 import uuid
 from datetime import datetime
+from pathlib import Path
+
+# Validators also change with the code that defines the JSON representation.
+SOURCE_VERSION=hashlib.sha256(b''.join((Path(__file__).parent/name).read_bytes() for name in
+    ('main.py','feed.py','viewings.py','comments.py','auth.py','criteria.py','finance.py','covers.py'))).hexdigest()
 
 LIST_FIELDS=('id','title','price','address','url','complex_name','area','floor','metro','metro_time',
              'metro_walk_minutes','source','first_seen','last_seen','last_imported','property_id',
@@ -43,8 +48,9 @@ def version(conn):
     return row['epoch'],row['revision']
 
 
-def etag(epoch,revision,view,user,full=False):
-    raw=':'.join(map(str,(epoch,revision,view,user['id'],user['role'],bool(full))))
+def etag(epoch,revision,view,user,full=False,criteria=None):
+    raw=':'.join(map(str,(SOURCE_VERSION,epoch,revision,view,user['id'],user['role'],bool(full),
+                         json.dumps(criteria,sort_keys=True,separators=(',',':')))))
     return 'W/"'+hashlib.sha256(raw.encode()).hexdigest()+'"'
 
 
@@ -67,7 +73,7 @@ def summaries(conn,view,cover_sources):
         length(p.family_comment)>? AS family_comment_truncated,
         u.display_name AS review_updated_by_name,u.username AS review_updated_by_username,
         r.display_name AS realtor_updated_by_name,r.username AS realtor_updated_by_username,
-        c.display_name AS family_comment_updated_by_name
+        COALESCE(NULLIF(c.display_name,''),c.username) AS family_comment_updated_by_name
         FROM properties p JOIN listings l ON l.id=p.current_listing_id AND l.property_id=p.id
         LEFT JOIN users u ON u.id=l.review_updated_by LEFT JOIN users r ON r.id=l.realtor_updated_by
         LEFT JOIN users c ON c.id=p.family_comment_updated_by
@@ -79,7 +85,7 @@ def summaries(conn,view,cover_sources):
     # historical rows/texts are decoded. Only IDs/counts/ranges reach the list.
     scoped=' JOIN properties p ON p.id=l.property_id WHERE p.merged_into IS NULL'+selection
     for row in conn.execute('''SELECT l.property_id,COUNT(*) AS n,MIN(l.first_seen) AS first_seen,
-        GROUP_CONCAT(l.id,'|') AS ids FROM listings l'''+scoped+' GROUP BY l.property_id'):
+        GROUP_CONCAT(l.id,'|') AS ids FROM (SELECT l.id,l.property_id,l.first_seen FROM listings l'''+scoped+' ORDER BY l.first_seen,l.id) l GROUP BY l.property_id'):
         item=items.get(row['property_id'])
         if item:
             item.update(first_seen=row['first_seen'],listing_ids=row['ids'].split('|'),relist_count=max(0,row['n']-1))
@@ -162,6 +168,8 @@ def summaries(conn,view,cover_sources):
         item.setdefault('visits',[])
         item['viewed_group']=viewings.classification(item['visits'],item['viewing_documents_ready'])
         item.setdefault('visit_count',0)
+        item.setdefault('price_min',item['price'])
+        item.setdefault('price_max',item['price'])
         item.setdefault('price_history_count',0)
         item.setdefault('comment_history_count',{})
         item.setdefault('duplicate_candidate',None)

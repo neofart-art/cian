@@ -478,7 +478,8 @@ def state(request: Request, view: Literal['all','ours']='all', full: bool=False,
     with database() as conn:
         conn.execute('BEGIN')
         epoch,revision=feed.version(conn)
-        tag=feed.etag(epoch,revision,view,user,full)
+        criteria=browser_criteria()
+        tag=feed.etag(epoch,revision,view,user,full,criteria)
         headers={'ETag':tag,'Vary':'Accept-Encoding'}
         if any(value.strip()=='*' or value.strip().removeprefix('W/')==tag.removeprefix('W/')
                for value in request.headers.get('if-none-match','').split(',')):
@@ -494,7 +495,7 @@ def state(request: Request, view: Literal['all','ours']='all', full: bool=False,
         saved_browser=json.loads(conn.execute('SELECT payload FROM browser_state WHERE id=1').fetchone()[0])
         result={'listings':listings,'totals':counts,'identity_revision':identity_revision(conn),
                 'feed_epoch':epoch,'feed_revision':revision,'user':user,
-                'last_success':saved_browser.get('last_success'),'criteria':browser_criteria()}
+                'last_success':saved_browser.get('last_success'),'criteria':criteria}
         if user['role']=='admin':
             run=conn.execute('SELECT * FROM runs ORDER BY id DESC LIMIT 1').fetchone()
             result.update(run=dict(run) if run else None,browser=saved_browser)
