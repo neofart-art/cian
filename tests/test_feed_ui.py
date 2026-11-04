@@ -124,6 +124,15 @@ def test_slow_large_lists_loading_retry_single_flight_and_realtor_save(large_app
             await context.route('**/*',bridge)
             page=await context.new_page();page.set_default_timeout(15000);failures=[]
             page.on('pageerror',lambda e:failures.append(str(e)))
+            async def before_reload():
+                # Reload cancels the old document's fetch, but its already-sent
+                # ASGI body can still be finishing. Drain it before asserting
+                # per-document single-flight again in the replacement page.
+                await page.evaluate('async()=>{clearTimeout(pollTimer);if(refreshPromise)await refreshPromise;}')
+                deadline=time.monotonic()+5
+                while server.inflight:
+                    assert time.monotonic()<deadline,'state response did not drain'
+                    await asyncio.sleep(.02)
             async def shot(name):
                 folder=os.getenv('UI_SCREENSHOT_DIR')
                 if folder:
@@ -189,7 +198,7 @@ def test_slow_large_lists_loading_retry_single_flight_and_realtor_save(large_app
                 assert len([w for w in writes if w[1].endswith('/realtor-review')])==1
                 await page.locator('#load-retry').click()
                 await expect(page.locator('#load-state')).to_be_hidden()
-                await page.reload()
+                await before_reload();await page.reload()
                 await expect(page.locator('#nav-all-count')).to_have_text('500')
                 await row.locator('.realtor-edit').click()
                 await expect(field).to_have_value(draft)
