@@ -55,12 +55,18 @@ class SlowServer:
             await send({'type':'http.response.start','status':503,'headers':[
                 (b'content-type',b'application/json'),(b'content-length',str(len(body)).encode()),(b'cache-control',b'no-store')]})
             await send({'type':'http.response.body','body':body});finish()
-        status=200;encoding=None;wire_bytes=0
+        status=200;encoding=None;wire_bytes=0;expected_length=None
+        def complete_wire():
+            if not finished:
+                self.wire.append({'status':status,'bytes':wire_bytes,'encoding':encoding.decode() if encoding else None})
+                finish()
         async def shaped(message):
-            nonlocal status,encoding,wire_bytes
+            nonlocal status,encoding,wire_bytes,expected_length
             if message['type']=='http.response.start':
-                status=message['status'];encoding=dict(message['headers']).get(b'content-encoding')
+                status=message['status'];response_headers=dict(message['headers']);encoding=response_headers.get(b'content-encoding')
+                expected_length=int(response_headers[b'content-length']) if b'content-length' in response_headers else None
                 await asyncio.sleep(.15);await send(message)
+                if status in (204,304):complete_wire()  # HTTP completes at headers, before ASGI cleanup.
             elif message['type']=='http.response.body':
                 body=message.get('body',b'');wire_bytes+=len(body)
                 for pos in range(0,len(body),4096):
@@ -69,8 +75,9 @@ class SlowServer:
                     await send({'type':'http.response.body','body':chunk,'more_body':True})
                 if not message.get('more_body'):
                     await send({'type':'http.response.body','body':b'','more_body':False})
-                    self.wire.append({'status':status,'bytes':wire_bytes,'encoding':encoding.decode() if encoding else None})
-                    finish()
+                    complete_wire()
+                elif expected_length is not None and wire_bytes>=expected_length:
+                    complete_wire()  # Content-Length completes HTTP before a trailing empty ASGI frame.
             else:await send(message)
         try:
             if self.initial:
@@ -124,7 +131,7 @@ def test_slow_large_lists_loading_retry_single_flight_and_realtor_save(large_app
             await context.route('**/*',bridge)
             page=await context.new_page();page.set_default_timeout(15000);failures=[]
             page.on('pageerror',lambda e:failures.append(str(e)))
-            async def before_reload():
+            async def drain_state_response():
                 # Reload cancels the old document's fetch, but its already-sent
                 # ASGI body can still be finishing. Drain it before asserting
                 # per-document single-flight again in the replacement page.
@@ -189,6 +196,7 @@ def test_slow_large_lists_loading_retry_single_flight_and_realtor_save(large_app
                 # may still await browser/status and otherwise re-arm its timer.
                 # Forced refresh/Retry still work; reload restores real visibility.
                 await page.evaluate("async()=>{Object.defineProperty(document,'hidden',{configurable:true,get:()=>true});document.dispatchEvent(new Event('visibilitychange'));if(refreshPromise)await refreshPromise;}")
+                await drain_state_response()
                 server.fail_next=True
                 await page.evaluate('refresh(true)')
                 await expect(page.locator('#load-message')).to_contain_text('Показаны предыдущие данные')
@@ -202,7 +210,7 @@ def test_slow_large_lists_loading_retry_single_flight_and_realtor_save(large_app
                 assert len([w for w in writes if w[1].endswith('/realtor-review')])==1
                 await page.locator('#load-retry').click()
                 await expect(page.locator('#load-state')).to_be_hidden()
-                await before_reload();await page.reload()
+                await drain_state_response();await page.reload()
                 await expect(page.locator('#nav-all-count')).to_have_text('500')
                 await row.locator('.realtor-edit').click()
                 await expect(field).to_have_value(draft)
@@ -223,7 +231,7 @@ def test_slow_large_lists_loading_retry_single_flight_and_realtor_save(large_app
                     await row.locator('.visit-date-ok').click()
                     await expect(row.locator('.visit-date-status')).to_have_text('Дата сохранена.')
                     await expect(control).to_have_value('12.12.2030')
-                    await before_reload();await page.reload()
+                    await drain_state_response();await page.reload()
                     await expect(row.locator('.visit-date-input')).to_have_value('12.12.2030')
                 await row.scroll_into_view_if_needed();await shot('list')
                 # Explicit visibility transition: no polling or force-free fetch
