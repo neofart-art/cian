@@ -248,6 +248,7 @@ def test_shared_review_ui_login_roles_refresh_and_layout(tmp_path, monkeypatch):
                 await page.locator('#visit-save').click()
                 await expect(page.locator('#visit-dialog')).not_to_be_visible()
                 await expect(visit_row).to_have_class('review-rejected viewed-rejected')
+                await visit_row.locator('.visit-history>summary').click()
                 await expect(visit_row.locator('.visit-history')).to_contain_text('Не понравилось')
                 assert await page.evaluate('document.documentElement.scrollWidth <= innerWidth')
                 assert await page.locator('#viewed-rejected-section .viewed-wrap').evaluate('el => el.scrollWidth <= el.clientWidth')
@@ -945,7 +946,7 @@ def test_two_pages_selection_groups_stage_colors_roles_and_reload(two_page_app,p
             await expect(row.locator('.visit-date-input')).to_have_count(0)
             await expect(row.locator('.viewed-stage-select')).to_have_value('liked')
             assert await row.locator('td').first.evaluate('el=>getComputedStyle(el).backgroundColor')=='rgb(233, 245, 231)'
-            assert '73, 134, 181' in await (row if phone else row.locator('td').first).evaluate('el=>getComputedStyle(el).borderLeftColor' if phone else 'el=>getComputedStyle(el).boxShadow')
+            assert '76, 137, 81' in await (row if phone else row.locator('td').first).evaluate('el=>getComputedStyle(el).borderLeftColor' if phone else 'el=>getComputedStyle(el).boxShadow')
             before=current('9501');stale=client.get('/api/state?full=1').json()
             await row.locator('.viewed-stage-select').select_option('documents')
             await expect(page.locator('#viewed-documents-listings tr[data-listing-id="9501"]')).to_have_count(1)

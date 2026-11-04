@@ -65,14 +65,12 @@ def worker(source,data,output,label):
                 else:payload={'listings':main.feed.summaries(conn,mode,lambda r:main.covers.sources(r,check_path=False))}
                 assembled=(time.perf_counter()-begin)*1000
                 sql_stage=conn.sql_seconds*1000
-            profile=cProfile.Profile();profile.enable()
             begin=time.perf_counter()
             encoded=jsonable_encoder(payload) if label=='before' else payload
             conversion=(time.perf_counter()-begin)*1000
             begin=time.perf_counter()
             json.dumps(encoded,ensure_ascii=False,separators=(',',':'),allow_nan=False).encode()
             serialization=(time.perf_counter()-begin)*1000
-            profile.disable()
             # Profile filesystem resolves separately from the network request.
             fs=cProfile.Profile()
             with main.database() as conn:
@@ -106,10 +104,10 @@ def worker(source,data,output,label):
                     await asyncio.sleep(.15);await send(message)
                 elif message['type']=='http.response.body':
                     body=message.get('body',b'')
-                    for start in range(0,len(body),16384):
-                        chunk=body[start:start+16384]
-                        await send({'type':'http.response.body','body':chunk,'more_body':True})
+                    for start in range(0,len(body),4096):
+                        chunk=body[start:start+4096]
                         await asyncio.sleep(len(chunk)/rate)
+                        await send({'type':'http.response.body','body':chunk,'more_body':True})
                     if not message.get('more_body'):
                         await send({'type':'http.response.body','body':b'','more_body':False})
                 else:await send(message)
