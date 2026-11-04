@@ -27,7 +27,7 @@ def test_shared_comments_mobile_cards_and_no_duplicate_forms(two_page_app,engine
             if fail_once and url.path.endswith('/family-comment') and req.method=='PATCH':
                 fail_once=False
                 await route.fulfill(status=503,content_type='application/json',body=json.dumps({'detail':'Тестовая временная ошибка'}));return
-            headers={k:v for k,v in req.headers.items() if k.lower() in ('content-type','origin','sec-fetch-site','x-csrf-token')}
+            headers={k:v for k,v in req.headers.items() if k.lower() in ('content-type','origin','sec-fetch-site','x-csrf-token','if-none-match','accept-encoding')}
             result=client.request(req.method,url.path+('?' + url.query if url.query else ''),
                                   headers=headers,content=req.post_data_buffer,follow_redirects=False)
             await route.fulfill(status=result.status_code,headers={k:v for k,v in result.headers.items()
@@ -56,7 +56,7 @@ def test_shared_comments_mobile_cards_and_no_duplicate_forms(two_page_app,engine
                 await expect(page.locator('[data-review-filter="all"] span')).to_have_text('9')
                 row=page.locator('tr[data-listing-id="9500"]')
                 await expect(row.locator('.membership-label')).to_be_visible()
-                assert await row.locator('td').first.evaluate('e=>getComputedStyle(e).backgroundColor')=='rgb(233, 243, 252)'
+                assert await row.locator('td').first.evaluate('e=>getComputedStyle(e).backgroundColor')=='rgb(255, 254, 250)'
                 assert await page.locator('#listing-table th').all_text_contents()==[
                     'Риелтор','Фото','Номер ЦИАН / ссылка','Объект / адрес','Цена','Ипотека / мес.','Площадь','Этаж','Метро','Добавлено','Семейная оценка']
                 await fits();await shot('all')
@@ -76,7 +76,7 @@ def test_shared_comments_mobile_cards_and_no_duplicate_forms(two_page_app,engine
                 row=page.locator('tr[data-listing-id="9500"]')
                 assert await page.locator('tr[data-listing-id="9500"]').count()==1
                 assert await page.locator('.viewed-table').first.locator('th').all_text_contents()==[
-                    'Риелтор / юрист','Фото','Квартира','Цена','Дата просмотра','Результат просмотра','Наш комментарий','Этап отбора']
+                    'Риелтор','Фото','Квартира','Цена','Дата просмотра','Результат просмотра','Наш комментарий','Этап отбора']
                 if width>900:
                     assert (await row.locator('.viewing-result-cell button').first.bounding_box())['width']>=140
                     assert (await row.locator('.selection-stage-cell').bounding_box())['width']>=210
@@ -146,6 +146,7 @@ def test_shared_comments_mobile_cards_and_no_duplicate_forms(two_page_app,engine
                 await expect(page.locator('#nav-all-count')).to_have_text('9')
                 await page.goto('https://xata.test/ours')
                 row=page.locator('tr[data-listing-id="9500"]')
+                await row.locator('.family-comment-cell .comment-more').click()
                 await expect(row.locator('.family-comment-text')).to_have_text(draft)
                 await fits();await shot('ours')
                 await row.locator('.family-edit').click()
@@ -157,7 +158,7 @@ def test_shared_comments_mobile_cards_and_no_duplicate_forms(two_page_app,engine
                     assert (await row.locator('.family-editor .comment-cancel').bounding_box())['height']>=44
                 await row.locator('.family-editor .comment-cancel').click()
                 assert current('9500')['family_comment']==draft
-                snapshot=client.get('/api/state').json()['listings']
+                snapshot=client.get('/api/state?full=1').json()['listings']
                 await row.locator('.compare-select').check()
                 await page.locator('tr[data-listing-id="9502"] .compare-select').check()
                 await page.locator('#compare-open').click()
@@ -165,9 +166,10 @@ def test_shared_comments_mobile_cards_and_no_duplicate_forms(two_page_app,engine
                 assert await page.locator('#compare-table thead th').count()==3
                 await fits()
                 await page.locator('#compare-close').click()
-                assert client.get('/api/state').json()['listings']==snapshot
+                assert client.get('/api/state?full=1').json()['listings']==snapshot
                 sign_in(client,'expert','password-123');await page.reload()
                 await expect(row.locator('.family-edit')).to_be_hidden()
+                await row.locator('.family-comment-cell .comment-more').click()
                 await expect(row.locator('.family-comment-text')).to_have_text(draft)
                 await row.locator('.realtor-edit').click()
                 await row.locator('.realtor-select').select_option('approved')

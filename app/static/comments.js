@@ -1,7 +1,7 @@
 /* One comment editor per property: refresh updates data, never live drafts. */
 (function(root){
 'use strict';
-function create({kind,getItem,getUser,request,jsonOptions,accept,refresh,render}) {
+function create({kind,getItem,getUser,request,jsonOptions,accept,refresh,render,ensureDetails}) {
   const family=kind==='family', prefix=family?'family':'realtor';
   const cells=new Map();
   function text(node,value){const s=String(value??'');if(node.textContent!==s)node.textContent=s;}
@@ -15,7 +15,8 @@ function create({kind,getItem,getUser,request,jsonOptions,accept,refresh,render}
     const more=button('Читать полностью','comment-more secondary');
     const meta=document.createElement('small');meta.className=prefix+'-meta';
     const edit=button('Добавить комментарий',prefix+'-edit secondary');
-    display.append(badge,body,more,meta,edit);
+    const loadError=document.createElement('p');loadError.className='error comment-load-error';loadError.setAttribute('role','status');
+    display.append(badge,body,more,meta,edit,loadError);
     const form=document.createElement('form');form.className=prefix+'-editor comment-editor';form.hidden=true;
     const status=document.createElement('select');status.className=family?'family-unused':'realtor-select';status.hidden=family;
     for(const [value,label] of [['pending','Не оценено'],['approved','Одобрено'],['rejected','Отбраковано']]){
@@ -34,11 +35,14 @@ function create({kind,getItem,getUser,request,jsonOptions,accept,refresh,render}
     const summary=document.createElement('summary');summary.textContent='История';
     const entries=document.createElement('div');history.append(summary,entries);
     host.append(display,form,history);
-    const state={host,display,badge,body,more,meta,edit,form,status,input,save,cancel,error,conflict,remote,rebase,history,entries,editing:false,pending:false,dirty:false,expanded:false,baseVersion:0,baseProperty:null,historySignature:null};
+    const state={host,display,badge,body,more,meta,edit,form,status,input,save,cancel,error,conflict,remote,rebase,history,entries,editing:false,pending:false,dirty:false,expanded:false,baseVersion:0,baseProperty:null,historySignature:null,loading:false};
     cells.set(key,state);
-    more.addEventListener('click',()=>{state.expanded=!state.expanded;update(key);});
-    edit.addEventListener('click',()=>{
-      const item=getItem(key);if(!item)return;
+    async function load(){text(loadError,'Загрузка…');state.loading=true;update(key);try{const result=await ensureDetails(key,true);text(loadError,'');return result;}catch(e){text(loadError,e.message);return null;}finally{state.loading=false;update(key);}}
+    more.addEventListener('click',async()=>{if(state.loading)return;if(!state.expanded&&!getItem(key)?.details_loaded&&!await load())return;state.expanded=!state.expanded;update(key);});
+    history.addEventListener('toggle',async()=>{if(history.open&&!state.loading&&!getItem(key)?.details_loaded)await load();});
+    edit.addEventListener('click',async()=>{
+      if(state.loading)return;
+      const item=await load();if(!item||!item.details_loaded)return;
       state.editing=true;state.dirty=false;state.baseProperty=item.property_id;
       state.baseVersion=item[family?'family_comment_version':'realtor_version']||0;
       input.value=item[family?'family_comment':'realtor_comment']||'';
@@ -77,16 +81,17 @@ function create({kind,getItem,getUser,request,jsonOptions,accept,refresh,render}
     const canEdit=family?['admin','reviewer'].includes(getUser()?.role):['admin','realtor'].includes(getUser()?.role);
     s.display.hidden=s.editing;s.form.hidden=!s.editing;
     text(s.body,value||'—');s.body.classList.toggle('comment-collapsed',!s.expanded);
-    const measure=()=>{s.more.hidden=!value||(!s.expanded&&s.body.scrollHeight<=s.body.clientHeight+1);};
+    const measure=()=>{s.more.hidden=!value||(!item[family?'family_comment_truncated':'realtor_comment_truncated']&&!s.expanded&&s.body.scrollHeight<=s.body.clientHeight+1);};
     text(s.more,s.expanded?'Свернуть':'Читать полностью');
     requestAnimationFrame(measure);
-    if(!s.resize&&typeof ResizeObserver!=='undefined'){s.resize=new ResizeObserver(()=>{if(!s.editing){const v=getItem(key)?.[family?'family_comment':'realtor_comment']||'';s.more.hidden=!v||(!s.expanded&&s.body.scrollHeight<=s.body.clientHeight+1);}});s.resize.observe(s.body);}
+    if(!s.resize&&typeof ResizeObserver!=='undefined'){s.resize=new ResizeObserver(()=>{if(!s.editing){const v=getItem(key)?.[family?'family_comment':'realtor_comment']||'';s.more.hidden=!v||(!getItem(key)?.[family?'family_comment_truncated':'realtor_comment_truncated']&&!s.expanded&&s.body.scrollHeight<=s.body.clientHeight+1);}});s.resize.observe(s.body);}
     const date=item[family?'family_comment_updated_at':'realtor_updated_at'];
     const author=family?item.family_comment_updated_by_name:(item.realtor_updated_by_name||item.realtor_updated_by_username);
     text(s.meta,date?stamp(author,date):'');s.meta.hidden=!date;
     const status=item.realtor_status||'pending';
     text(s.badge,status==='rejected'&&item.in_our_list?'Отбраковано риелтором':({pending:'Не оценено',approved:'Одобрено',rejected:'Отбраковано'}[status]));
     if(!family)s.badge.className='realtor-label realtor-'+status;
+    s.edit.disabled=s.loading;s.more.disabled=s.loading;
     s.edit.hidden=!canEdit||(family&&(!document.body.matches('[data-page=ours]')||!item.in_our_list));
     text(s.edit,value?'Изменить':'Добавить комментарий');
     s.input.setAttribute('aria-label',(family?'Наш комментарий ':'Комментарий риелтора ')+item.id);
@@ -110,10 +115,10 @@ function create({kind,getItem,getUser,request,jsonOptions,accept,refresh,render}
       }
       s.historySignature=signature;
     }
-    s.history.hidden=!history.length||s.editing;
+    s.history.hidden=!(history.length||item.comment_history_count?.[kind])||s.editing;
     return s;
   }
-  return {update,element:key=>update(key).host,editing:key=>!!cells.get(key)?.editing,dirty:key=>!!cells.get(key)?.dirty};
+  return {update,element:key=>update(key).host,editing:key=>!!cells.get(key)?.editing,dirty:key=>!!cells.get(key)?.dirty,needsDetails:key=>{const s=cells.get(key);return !!s&&!s.editing&&(s.history.open||s.expanded);}};
 }
 root.XataComments={create};
 })(globalThis);

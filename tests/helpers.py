@@ -27,7 +27,7 @@ def unauthenticated(client, path, **kwargs):
 def post_realtor(client,path,*,json,**kwargs):
     """Legacy regression scenarios now send the same optimistic token as the UI."""
     data=dict(json)
-    response=client.get('/api/state')
+    response=client.get('/api/state?full=1')
     key=path.split('/')[3]
     item=next((i for i in response.json().get('listings',[]) if key in i.get('listing_ids',[i['id']])),{}) if response.status_code==200 else {}
     data.setdefault('property_id',item.get('property_id',1))

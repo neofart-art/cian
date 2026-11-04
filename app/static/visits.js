@@ -1,6 +1,6 @@
 /* Shared family viewings. The dialog is independent of background table refresh. */
 'use strict';
-globalThis.XataVisits = {create({getItem,getUser,saveItem,request,jsonOptions,render,refresh}) {
+globalThis.XataVisits = {create({getItem,getUser,saveItem,request,jsonOptions,render,refresh,ensureDetails}) {
   const outcomes={liked:'Понравилось',rejected:'Не понравилось',thinking:'Думаем'};
   const states={planned:'Запланирован',completed:'Состоялся',cancelled:'Отменён'};
   const reasons={noise:'Шум',layout:'Планировка',condition:'Состояние квартиры',building:'Дом / подъезд',location:'Расположение',documents:'Документы',other:'Другое'};
@@ -44,8 +44,12 @@ globalThis.XataVisits = {create({getItem,getUser,saveItem,request,jsonOptions,re
   for(const choice of outcomeFields.querySelectorAll('[data-visit-outcome]'))choice.addEventListener('click',()=>{
     outcome.value=choice.dataset.visitOutcome;stateFields();
   });
-  function open(key,visit=null,mode=null) {
-    const item=getItem(key);if(!item||!canEdit()||saving)return;
+  async function open(key,visit=null,mode=null) {
+    if(!canEdit()||saving)return;
+    let item;
+    try{item=await ensureDetails(key,true);}catch(e){document.querySelector('#page-message').textContent=e.message;return;}
+    if(!item||!item.details_loaded)return;
+    visit=visit?.id?(item.visits||[]).find(v=>v.id===visit.id)||null:visit;
     const actualTime=visit?.completed_at||new Date().toISOString();
     editing={key,listingId:item.id,propertyId:item.property_id,id:visit?.id,version:visit?.version||0,
       preparation:visit?.preparation||'',scheduledAt:visit?.scheduled_at||null,completedAt:actualTime,requestId:visit?null:crypto.randomUUID()};
@@ -295,7 +299,7 @@ globalThis.XataVisits = {create({getItem,getUser,saveItem,request,jsonOptions,re
   }
   function renderCells(dateCell,resultCell,item) {
     renderDate(dateCell,item);
-    const signature=JSON.stringify([item.visits_version,item.visits,getUser()?.role,
+    const signature=JSON.stringify([item.visits_version,item.visits,item.details_loaded,item.visit_count,getUser()?.role,
       (item.visits||[]).map(v=>XataReview.overdue(v))]);
     if(resultCell.dataset.visitsSignature===signature)return;
     resultCell.dataset.visitsSignature=signature;
@@ -308,10 +312,12 @@ globalThis.XataVisits = {create({getItem,getUser,saveItem,request,jsonOptions,re
       if(current)open(XataReview.key(current),XataReview.displayVisit(current),'completed');
     }));
     const history=item.visits||[];
-    if(history.length) {
+    if(history.length||item.visit_count) {
       const details=el('details',null,'visit-history');details.open=!!historyOpen;
-      details.append(el('summary','История просмотров ('+history.length+')'));
-      for(const v of history)details.append(record(item,v));
+      details.append(el('summary','История просмотров ('+(item.visit_count??history.length)+')'));
+      details.addEventListener('toggle',async()=>{if(details.open&&!getItem(XataReview.key(item))?.details_loaded){try{await ensureDetails(XataReview.key(item));render();}catch(e){details.append(el('p',e.message,'error'));}}});
+      if(item.details_loaded)for(const v of history)details.append(record(item,v));
+      else details.append(el('p','Полная история загрузится при открытии.'));
       resultCell.append(details);
     }
   }

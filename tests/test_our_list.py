@@ -176,5 +176,5 @@ def test_merge_union_relisting_and_import_keep_membership(multi_app,selected_sou
         main.save_items(conn,[sample('702',price=11900000)],'2026-10-28T10:00:00Z')
     final=current(admin,'700')
     assert final['in_our_list'] and '702' in final['listing_ids']
-    assert len([i for i in admin.get('/api/state').json()['listings'] if '700' in i['listing_ids']])==1
+    assert len([i for i in admin.get('/api/state?full=1').json()['listings'] if '700' in i['listing_ids']])==1
     assert len(final['price_history'])>=3

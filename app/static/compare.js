@@ -1,6 +1,6 @@
 /* Read-only comparison of 2–4 current properties. No ratings or write API. */
 'use strict';
-globalThis.XataCompare={create({getItem,render}) {
+globalThis.XataCompare={create({getItem,render,ensureDetails}) {
   const selected=new Set(),dialog=document.querySelector('#compare-dialog'),table=document.querySelector('#compare-table');
   const openButton=document.querySelector('#compare-open'),notice=document.querySelector('#compare-message');
   let signature='';
@@ -78,7 +78,7 @@ globalThis.XataCompare={create({getItem,render}) {
     }
     table.append(body);scroll.scrollLeft=left;
   }
-  openButton.addEventListener('click',()=>{sync();if(selected.size>=2){signature='';showTable();dialog.showModal();}});
+  openButton.addEventListener('click',async()=>{openButton.disabled=true;try{await Promise.all([...selected].map(key=>ensureDetails(key,true)));sync();if(selected.size>=2){signature='';showTable();dialog.showModal();}}catch(e){announce(e.message);}finally{sync();}});
   document.querySelector('#compare-close').addEventListener('click',()=>dialog.close());
   document.querySelector('#compare-clear').addEventListener('click',()=>{selected.clear();render();});
   return {toggle,sync,has:key=>selected.has(key)};

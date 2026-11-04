@@ -73,10 +73,10 @@ def browser_app(tmp_path, monkeypatch):
 
 def finish(client, main):
     for _ in range(200):
-        state = client.get('/api/state').json()
+        state = client.get('/api/state?full=1').json()
         if state['run'] and state['run']['status'] != 'running' and not main.lock.locked():
             # Re-read after the worker released its lock (metadata is persisted last).
-            return client.get('/api/state').json()
+            return client.get('/api/state?full=1').json()
         time.sleep(.01)
     pytest.fail('background collection did not finish')
 
@@ -122,7 +122,7 @@ def test_browser_upsert_attention_and_csv_independence(browser_app, monkeypatch)
     csv = b'url;price\nhttps://cian.ru/sale/flat/123/;11800000'
     preview = client.post('/api/import/preview', content=csv).json()
     assert client.post('/api/import/confirm', json={'token': preview['token']}).json()['updated'] == 1
-    assert client.get('/api/state').json()['listings'][0]['first_seen'] == first_seen
+    assert client.get('/api/state?full=1').json()['listings'][0]['first_seen'] == first_seen
     assert client.get('/api/export.xlsx').status_code == 200
     importlib.reload(main)
     assert main.browser_state()['last_success'] == success

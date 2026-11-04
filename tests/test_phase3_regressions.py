@@ -29,7 +29,7 @@ def property_id(main, listing):
 
 
 def pending(admin, listing):
-    return next(row for row in admin.get('/api/state').json()['listings'] if str(listing) in row['listing_ids'])['duplicate_candidate']
+    return next(row for row in admin.get('/api/state?full=1').json()['listings'] if str(listing) in row['listing_ids'])['duplicate_candidate']
 
 
 def payload(candidate, decision='same'):
@@ -115,14 +115,14 @@ def test_historical_refresh_does_not_revert_current_or_repeat_prices(multi_app):
     with main.database() as conn:
         assert conn.execute('SELECT count(*) FROM price_history').fetchone()[0]==before
     saved(main,sample('120',price=12900000),now='2026-10-06T10:00:00+00:00')
-    item=next(x for x in admin.get('/api/state').json()['listings'] if '120' in x['listing_ids'])
+    item=next(x for x in admin.get('/api/state?full=1').json()['listings'] if '120' in x['listing_ids'])
     assert item['id']=='121' and item['price']==12500000
     assert item['first_seen']=='2026-10-01T10:00:00+00:00'
     assert [(x['id'],x['status']) for x in item['publication_history']]==[('120','historical'),('121','current')]
     assert [x['price'] for x in item['price_history']]==[13000000,12500000,12900000]
     # Missing price is not a new observation of the previously merged price.
     saved(main,{'id':'120','title':'Без цены'},now='2026-10-07T10:00:00+00:00')
-    item2=next(x for x in admin.get('/api/state').json()['listings'] if x['property_id']==item['property_id'])
+    item2=next(x for x in admin.get('/api/state?full=1').json()['listings'] if x['property_id']==item['property_id'])
     assert item2['price_history']==item['price_history']
 
 
@@ -232,7 +232,7 @@ def test_csv_preview_is_readonly_and_browser_counts_properties(multi_app,monkeyp
     main.lock.acquire()
     main.run_collection(run_id,{'max_price':14500000,'metro_minutes':20},'browser')
     assert main.browser_state()['new_count']==0 and main.browser_state()['relisted_count']==1
-    item=next(row for row in admin.get('/api/state').json()['listings'] if row['id']=='172')
+    item=next(row for row in admin.get('/api/state?full=1').json()['listings'] if row['id']=='172')
     assert item['listing_ids']==['170','171','172']
     assert item['review_status']=='liked' and item['realtor_comment']=='Сохранить'
     book=load_workbook(io.BytesIO(admin.get('/api/export.xlsx').content))
@@ -341,7 +341,7 @@ def test_stable_phase2_upgrade_preserves_every_original_value(phase2_database):
     with TestClient(main.app,base_url='https://testserver') as client:
         client.cookies.set(COOKIE,'legacy-session');client.headers['X-CSRF-Token']='legacy-csrf'
         assert client.get('/api/auth/me').status_code==200
-        assert len(client.get('/api/state').json()['listings'])==2
+        assert len(client.get('/api/state?full=1').json()['listings'])==2
     importlib.reload(main)
     with database() as conn:
         assert [dict(row) for row in conn.execute('SELECT * FROM listings')]==snapshot

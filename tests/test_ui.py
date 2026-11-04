@@ -51,7 +51,7 @@ def test_shared_review_ui_login_roles_refresh_and_layout(tmp_path, monkeypatch):
                 parsed = urlsplit(request.url)
                 assert parsed.hostname == 'xata.test', 'UI must not contact external services'
                 path = parsed.path + ('?' + parsed.query if parsed.query else '')
-                if path == '/api/state':
+                if parsed.path == '/api/state':
                     state_reads += 1
                     if inject_stale:
                         inject_stale = False
@@ -61,7 +61,7 @@ def test_shared_review_ui_login_roles_refresh_and_layout(tmp_path, monkeypatch):
                 # The bridge has one real server-side cookie jar per browser fixture.
                 # Secure/HttpOnly cookie attributes and cross-client isolation are tested in test_multiuser.py.
                 headers = {key:value for key,value in request.headers.items()
-                           if key.lower() in ('content-type','origin','sec-fetch-site','x-csrf-token')}
+                           if key.lower() in ('content-type','origin','sec-fetch-site','x-csrf-token','if-none-match','accept-encoding')}
                 response = client.request(request.method, path, content=request.post_data_buffer,
                                           headers=headers, follow_redirects=False)
                 forwarded = {key:value for key,value in response.headers.items()
@@ -99,7 +99,7 @@ def test_shared_review_ui_login_roles_refresh_and_layout(tmp_path, monkeypatch):
                 assert await link.text_content() == '123'
                 assert await link.get_attribute('target') == '_blank'
                 assert await link.get_attribute('rel') == 'noopener noreferrer'
-                stale_state = client.get('/api/state').json()
+                stale_state = client.get('/api/state?full=1').json()
                 await row.locator('.characteristics').evaluate('el => {el.open=true}')
                 await row.locator('.publication-details').evaluate('el => {el.open=true}')
                 await page.evaluate('window.savedRow = document.querySelector(\'tr[data-listing-id="123"]\')')
@@ -138,7 +138,7 @@ def test_shared_review_ui_login_roles_refresh_and_layout(tmp_path, monkeypatch):
                 row = page.locator('tr[data-listing-id="123"]')
                 await expect(row.locator('.review-select')).to_be_hidden()
                 assert await page.locator('[data-admin]:visible').count() == 0
-                stale_state = client.get('/api/state').json()
+                stale_state = client.get('/api/state?full=1').json()
                 await row.locator('.realtor-edit').click()
                 await row.locator('.realtor-select').select_option('rejected')
                 comment = '<img src=x onerror=alert(1)> Плохой подъезд\nДокументы?'
@@ -175,7 +175,7 @@ def test_shared_review_ui_login_roles_refresh_and_layout(tmp_path, monkeypatch):
                 await expect(row).to_have_class('review-new')
                 await expect(page.locator('#rejected-count')).to_have_text('0')
                 await expect(page.locator('[data-review-filter="new"] span')).to_have_text('3')
-                saved_item = next(item for item in client.get('/api/state').json()['listings'] if str(item['id']) == '123')
+                saved_item = next(item for item in client.get('/api/state?full=1').json()['listings'] if str(item['id']) == '123')
                 assert saved_item['review_status'] == 'new'
                 assert saved_item['realtor_status'] == 'approved'
                 await page.locator('#logout').click()
@@ -235,7 +235,7 @@ def test_shared_review_ui_login_roles_refresh_and_layout(tmp_path, monkeypatch):
                 await page.locator('#viewed-rejected-section > summary').click()
                 await expect(visit_row).to_be_visible()
                 await expect(visit_row).to_have_class('review-rejected viewed-rejected')
-                assert next(i for i in client.get('/api/state').json()['listings'] if i['id']=='789')['review_status']=='rejected'
+                assert next(i for i in client.get('/api/state?full=1').json()['listings'] if i['id']=='789')['review_status']=='rejected'
                 await expect(visit_row.locator('.viewing-result-cell')).to_contain_text('Не понравилось')
                 await page.reload()
                 await expect(visit_row).to_be_hidden()
@@ -281,7 +281,7 @@ def test_property_identity_relisting_and_late_poll_after_manual_merge(tmp_path,m
                 request=route.request;parsed=urlsplit(request.url)
                 assert parsed.hostname=='xata.test'
                 path=parsed.path+('?' + parsed.query if parsed.query else '')
-                if path=='/api/state' and hold:
+                if parsed.path=='/api/state' and hold:
                     hold=False
                     stale=client.get(path).json()
                     old_revision=stale['identity_revision']
@@ -290,7 +290,7 @@ def test_property_identity_relisting_and_late_poll_after_manual_merge(tmp_path,m
                     await route.fulfill(status=200,content_type='application/json',body=json.dumps(stale))
                     return
                 headers={key:value for key,value in request.headers.items()
-                         if key.lower() in ('content-type','origin','sec-fetch-site','x-csrf-token')}
+                         if key.lower() in ('content-type','origin','sec-fetch-site','x-csrf-token','if-none-match','accept-encoding')}
                 response=client.request(request.method,path,headers=headers,content=request.post_data_buffer,follow_redirects=False)
                 forwarded={key:value for key,value in response.headers.items()
                            if key.lower() not in ('set-cookie','content-length','content-encoding','transfer-encoding')}
@@ -409,7 +409,7 @@ def test_cover_column_modal_placeholder_refresh_and_hidden_marketing(tmp_path,mo
                 path=parsed.path+('?' + parsed.query if parsed.query else '')
                 requests.append(path)
                 headers={key:value for key,value in request.headers.items()
-                         if key.lower() in ('content-type','origin','sec-fetch-site','x-csrf-token')}
+                         if key.lower() in ('content-type','origin','sec-fetch-site','x-csrf-token','if-none-match','accept-encoding')}
                 response=client.request(request.method,path,headers=headers,content=request.post_data_buffer,follow_redirects=False)
                 forwarded={key:value for key,value in response.headers.items()
                            if key.lower() not in ('set-cookie','content-length','content-encoding','transfer-encoding')}
@@ -504,7 +504,7 @@ def test_confirmed_calendar_date_drafts_permissions_mobile_and_timezone(tmp_path
             assert client.post('/api/users',json={'username':username,'display_name':username,'password':'password-123','role':role}).status_code==201
         sign_in(client,'expert','password-123')
         def current(key='9300'):
-            return next(i for i in client.get('/api/state').json()['listings'] if i['id']==key)
+            return next(i for i in client.get('/api/state?full=1').json()['listings'] if i['id']==key)
         async def scenario():
             from playwright.async_api import async_playwright,expect
             calls=[]
@@ -513,7 +513,7 @@ def test_confirmed_calendar_date_drafts_permissions_mobile_and_timezone(tmp_path
                 assert parsed.hostname=='xata.test'
                 path=parsed.path+('?' + parsed.query if parsed.query else '')
                 if request.method not in ('GET','HEAD'):calls.append((request.method,path,json.loads(request.post_data or '{}')))
-                headers={k:v for k,v in request.headers.items() if k.lower() in ('content-type','origin','sec-fetch-site','x-csrf-token')}
+                headers={k:v for k,v in request.headers.items() if k.lower() in ('content-type','origin','sec-fetch-site','x-csrf-token','if-none-match','accept-encoding')}
                 response=client.request(request.method,path,headers=headers,content=request.post_data_buffer,follow_redirects=False)
                 forwarded={k:v for k,v in response.headers.items() if k.lower() not in ('set-cookie','content-length','content-encoding','transfer-encoding')}
                 await route.fulfill(status=response.status_code,headers=forwarded,body=response.content)
@@ -745,8 +745,8 @@ def test_calendar_icon_opens_real_day_grid_on_desktop_and_touch_phone(tmp_path,m
                 request=route.request;parsed=urlsplit(request.url)
                 assert parsed.hostname=='xata.test'
                 if request.method not in ('GET','HEAD'):writes.append((request.method,parsed.path))
-                headers={k:v for k,v in request.headers.items() if k.lower() in ('content-type','origin','sec-fetch-site','x-csrf-token')}
-                response=client.request(request.method,parsed.path,headers=headers,content=request.post_data_buffer,follow_redirects=False)
+                headers={k:v for k,v in request.headers.items() if k.lower() in ('content-type','origin','sec-fetch-site','x-csrf-token','if-none-match','accept-encoding')}
+                response=client.request(request.method,parsed.path+('?' + parsed.query if parsed.query else ''),headers=headers,content=request.post_data_buffer,follow_redirects=False)
                 forwarded={k:v for k,v in response.headers.items() if k.lower() not in ('set-cookie','content-length','content-encoding','transfer-encoding')}
                 await route.fulfill(status=response.status_code,headers=forwarded,body=response.content)
             async with async_playwright() as playwright:
@@ -793,7 +793,7 @@ def test_calendar_icon_opens_real_day_grid_on_desktop_and_touch_phone(tmp_path,m
                 await field.blur()
                 await page.evaluate('refresh(true)')
                 assert writes==[]
-                assert client.get('/api/state').json()['listings'][0]['visits']==[]
+                assert client.get('/api/state?full=1').json()['listings'][0]['visits']==[]
                 await expect(field).to_have_value('01.11.2026')
                 # Reopening retains the chosen draft month/day, and Escape
                 # closes only the calendar without touching the result form.
@@ -808,7 +808,7 @@ def test_calendar_icon_opens_real_day_grid_on_desktop_and_touch_phone(tmp_path,m
                 await press(cell.get_by_role('button',name='ОК',exact=True))
                 await expect(cell.locator('.visit-date-status')).to_have_text('Дата сохранена.')
                 assert len(writes)==1 and writes[0][1].endswith('/visits/date')
-                item=client.get('/api/state').json()['listings'][0]
+                item=client.get('/api/state?full=1').json()['listings'][0]
                 assert len(item['visits'])==1 and item['review_status']=='new'
                 assert item['visits'][0]['scheduled_at']=='2026-10-31T21:00:00+00:00'
                 await page.reload()
@@ -849,7 +849,7 @@ def two_page_app(tmp_path,monkeypatch):
     with TestClient(main.app,base_url='https://xata.test') as client:
         sign_in(client)
         def current(key):
-            return next(i for i in client.get('/api/state').json()['listings'] if i['id']==key)
+            return next(i for i in client.get('/api/state?full=1').json()['listings'] if i['id']==key)
         def visit(key,**changes):
             item=current(key)
             response=client.post('/api/listings/'+key+'/visits',json={'property_id':item['property_id'],
@@ -891,11 +891,11 @@ def test_two_pages_selection_groups_stage_colors_roles_and_reload(two_page_app,p
             request=route.request;parsed=urlsplit(request.url)
             assert parsed.hostname=='xata.test'
             path=parsed.path+('?' + parsed.query if parsed.query else '')
-            if path=='/api/state' and inject:
+            if parsed.path=='/api/state' and inject:
                 inject=False
                 await route.fulfill(status=200,content_type='application/json',body=json.dumps(stale))
                 return
-            headers={k:v for k,v in request.headers.items() if k.lower() in ('content-type','origin','sec-fetch-site','x-csrf-token')}
+            headers={k:v for k,v in request.headers.items() if k.lower() in ('content-type','origin','sec-fetch-site','x-csrf-token','if-none-match','accept-encoding')}
             response=client.request(request.method,path,headers=headers,content=request.post_data_buffer,follow_redirects=False)
             forwarded={k:v for k,v in response.headers.items() if k.lower() not in ('set-cookie','content-length','content-encoding','transfer-encoding')}
             await route.fulfill(status=response.status_code,headers=forwarded,body=response.content)
@@ -913,7 +913,7 @@ def test_two_pages_selection_groups_stage_colors_roles_and_reload(two_page_app,p
             assert await page.locator('#listing-table th').all_text_contents()==[
                 'Риелтор','Фото','Номер ЦИАН / ссылка','Объект / адрес','Цена','Ипотека / мес.','Площадь','Этаж','Метро','Добавлено','Семейная оценка']
             assert await page.locator('#visit-dialog,#visit-agenda,#compare-dialog,[data-review-filter="viewed"],.visit-date-input').count()==0
-            stale=client.get('/api/state').json()
+            stale=client.get('/api/state?full=1').json()
             await page.locator('tr[data-listing-id="9507"] .selection-toggle').click()
             await expect(page.locator('tr[data-listing-id="9507"] .membership-label')).to_be_visible()
             await expect(page.locator('#nav-ours-count')).to_have_text('8')
@@ -924,7 +924,7 @@ def test_two_pages_selection_groups_stage_colors_roles_and_reload(two_page_app,p
             await page.wait_for_url('https://xata.test/ours')
             await expect(page.locator('#count')).to_have_text('8')
             assert await page.locator('.viewed-table').first.locator('th').all_text_contents()==[
-                'Риелтор / юрист','Фото','Квартира','Цена','Дата просмотра','Результат просмотра','Наш комментарий','Этап отбора']
+                'Риелтор','Фото','Квартира','Цена','Дата просмотра','Результат просмотра','Наш комментарий','Этап отбора']
             added=page.locator('tr[data-listing-id="9507"]')
             await added.locator('.selection-toggle').click()
             await expect(added).to_have_count(0)
@@ -944,9 +944,9 @@ def test_two_pages_selection_groups_stage_colors_roles_and_reload(two_page_app,p
             await expect(row.locator('.realtor-editor')).to_be_hidden()
             await expect(row.locator('.visit-date-input')).to_have_count(0)
             await expect(row.locator('.viewed-stage-select')).to_have_value('liked')
-            assert await row.locator('td').first.evaluate('el=>getComputedStyle(el).backgroundColor')=='rgb(233, 243, 252)'
+            assert await row.locator('td').first.evaluate('el=>getComputedStyle(el).backgroundColor')=='rgb(233, 245, 231)'
             assert '73, 134, 181' in await (row if phone else row.locator('td').first).evaluate('el=>getComputedStyle(el).borderLeftColor' if phone else 'el=>getComputedStyle(el).boxShadow')
-            before=current('9501');stale=client.get('/api/state').json()
+            before=current('9501');stale=client.get('/api/state?full=1').json()
             await row.locator('.viewed-stage-select').select_option('documents')
             await expect(page.locator('#viewed-documents-listings tr[data-listing-id="9501"]')).to_have_count(1)
             assert current('9501')['visits']==before['visits']
@@ -1021,7 +1021,7 @@ def test_our_page_agenda_conflicts_repeat_results_and_comparison_on_phone(two_pa
             assert parsed.hostname=='xata.test'
             path=parsed.path+('?' + parsed.query if parsed.query else '')
             if request.method not in ('GET','HEAD'):writes.append((request.method,path))
-            headers={k:v for k,v in request.headers.items() if k.lower() in ('content-type','origin','sec-fetch-site','x-csrf-token')}
+            headers={k:v for k,v in request.headers.items() if k.lower() in ('content-type','origin','sec-fetch-site','x-csrf-token','if-none-match','accept-encoding')}
             response=client.request(request.method,path,headers=headers,content=request.post_data_buffer,follow_redirects=False)
             forwarded={k:v for k,v in response.headers.items() if k.lower() not in ('set-cookie','content-length','content-encoding','transfer-encoding')}
             await route.fulfill(status=response.status_code,headers=forwarded,body=response.content)
@@ -1102,7 +1102,7 @@ def test_our_page_agenda_conflicts_repeat_results_and_comparison_on_phone(two_pa
             assert current('9500')['review_status']=='liked' and len(current('9500')['visits'])==2
             await expect(row.locator('.viewed-stage-select')).to_have_value('liked')
             await expect(row.locator('.viewing-date-cell time')).to_have_text('01.11.2030')
-            state_before=client.get('/api/state').json()['listings'];count=len(writes)
+            state_before=client.get('/api/state?full=1').json()['listings'];count=len(writes)
             for key in ('9502','9506','9500','9505'):
                 await page.locator('tr[data-listing-id="'+key+'"] .compare-select').check()
             await page.locator('tr[data-listing-id="9507"] .compare-select').click()
@@ -1123,7 +1123,7 @@ def test_our_page_agenda_conflicts_repeat_results_and_comparison_on_phone(two_pa
             await expect(outcome.locator('td').last).to_have_text('Думаем')
             assert await page.locator('#compare-scroll').evaluate('el=>el.scrollWidth>el.clientWidth')
             assert await page.locator('#compare-dialog').evaluate('el=>el.scrollWidth<=el.clientWidth')
-            assert len(writes)==count and client.get('/api/state').json()['listings']==state_before
+            assert len(writes)==count and client.get('/api/state?full=1').json()['listings']==state_before
             assert client.post('/api/listings/9506/review',json={'status':'rejected'}).status_code==200
             await page.evaluate('refresh(true)')
             await expect(page.locator('#compare-count')).to_have_text('3')

@@ -10,7 +10,7 @@ from tests.test_phase3 import sample
 
 
 def current(admin, listing='123'):
-    return next(i for i in admin.get('/api/state').json()['listings'] if str(listing) in i['listing_ids'])
+    return next(i for i in admin.get('/api/state?full=1').json()['listings'] if str(listing) in i['listing_ids'])
 
 
 def payload(item, **changes):
@@ -85,11 +85,11 @@ def test_stale_edits_bad_data_and_roles(multi_app):
     admin.post('/api/users',json={'username':'lawyer','display_name':'Юрист','password':'password-123','role':'realtor'})
     with TestClient(main.app,base_url='https://testserver') as expert:
         sign_in(expert,'lawyer','password-123')
-        assert expert.get('/api/state').json()['listings'][0]['visits'] is not None
+        assert expert.get('/api/state?full=1').json()['listings'][0]['visits'] is not None
         assert expert.post('/api/listings/123/visits',json=payload(item)).status_code==403
         assert expert.patch(url,json=edit).status_code==403
     with TestClient(main.app,base_url='https://testserver') as stranger:
-        assert stranger.get('/api/state').status_code==401
+        assert stranger.get('/api/state?full=1').status_code==401
         assert stranger.post('/api/listings/123/visits',json=payload(item)).status_code in (401,403)
     with TestClient(main.app,base_url='https://testserver') as no_csrf:
         sign_in(no_csrf);no_csrf.headers.pop('X-CSRF-Token')

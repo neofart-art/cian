@@ -2,7 +2,7 @@
 (function(root) {
   'use strict';
   const reviewFields = ['review_status','review_updated_at','review_updated_by','review_updated_by_name','review_updated_by_username','review_version'];
-  const realtorFields = ['realtor_status','realtor_comment','realtor_updated_at','realtor_updated_by','realtor_updated_by_name','realtor_updated_by_username','realtor_version'];
+  const realtorFields = ['realtor_comment_truncated','realtor_status','realtor_comment','realtor_updated_at','realtor_updated_by','realtor_updated_by_name','realtor_updated_by_username','realtor_version'];
   const rank = {new:0, liked:1, viewed:2, rejected:3}, realtorRank = {pending:0, approved:1, rejected:2};
   const collator = new Intl.Collator('ru', {sensitivity:'base'});
   function key(item) {
@@ -14,9 +14,17 @@
   }
   function merge(previous, incoming) {
     const result = {...incoming};
-    if (previous) for (const [version,fields] of [['family_comment_version',['family_comment','family_comment_version','family_comment_updated_at','family_comment_updated_by','family_comment_updated_by_name']],['selection_version',['in_our_list','selection_version']],['review_version',reviewFields],['realtor_version',realtorFields],['visits_version',['visits','visits_version','viewing_documents_ready','viewed_group']]]) {
+    if (previous) for (const [version,fields] of [['family_comment_version',['family_comment','family_comment_version','family_comment_updated_at','family_comment_updated_by','family_comment_updated_by_name','family_comment_truncated']],['selection_version',['in_our_list','selection_version']],['review_version',reviewFields],['realtor_version',realtorFields],['visits_version',['visits','visits_version','viewing_documents_ready','viewed_group']]]) {
       if (Number(previous[version] || 0) > Number(incoming[version] || 0))
         for (const key of fields) result[key] = previous[key];
+    }
+    // A list preview must never truncate an already-open unchanged comment.
+    if(previous&&incoming.details_loaded===false)for(const prefix of ['family','realtor']){
+      const version=prefix==='family'?'family_comment_version':'realtor_version';
+      const field=prefix==='family'?'family_comment':'realtor_comment';
+      if(previous[version]===incoming[version]&&!previous[field+'_truncated']&&previous[field]!=null){
+        result[field]=previous[field];result[field+'_truncated']=false;
+      }
     }
     if(previous?.comment_history||incoming.comment_history)
       result.comment_history=[...new Map([...(previous?.comment_history||[]),...(incoming.comment_history||[])].map(h=>[h.id,h])).values()].sort((a,b)=>b.id-a.id);

@@ -81,7 +81,7 @@ def test_login_cookies_logout_expiry_and_basic_removed(multi_app):
         assert client.get('/', follow_redirects=False).headers['location'] == '/login'
         assert client.get('/login').status_code == 200
         assert client.get('/api/state', auth=('owner', 'long-test-password')).status_code == 401
-        assert 'www-authenticate' not in client.get('/api/state').headers
+        assert 'www-authenticate' not in client.get('/api/state?full=1').headers
         assert login_attempt(client, password='incorrect').status_code == 401
         response = login_attempt(client)
         assert response.status_code == 200
@@ -108,7 +108,7 @@ def test_roles_and_administrative_api_enforcement(multi_app, monkeypatch):
         raise AssertionError('Denied reviewer request must not reach browser')
     monkeypatch.setattr(main.CianBrowserSource, 'collect', never)
     monkeypatch.setattr(main.CianBrowserSource, 'status', never)
-    state = reviewer.get('/api/state').json()
+    state = reviewer.get('/api/state?full=1').json()
     assert len(state['listings']) == 2
     assert 'browser' not in state and 'run' not in state
     for path in ('/api/users','/api/browser/status','/api/export.xlsx'):
@@ -144,7 +144,7 @@ def test_reviewer_status_author_and_time(multi_app, status):
     assert item['review_updated_at'].endswith('+00:00')
     assert item['review_version'] == 1
     assert item['first_seen'] == item['last_seen'] == '2020-01-01T00:00:00+00:00'
-    same = next(item for item in reviewer.get('/api/state').json()['listings'] if item['id'] == '123')
+    same = next(item for item in reviewer.get('/api/state?full=1').json()['listings'] if item['id'] == '123')
     assert same['review_updated_at'] == item['review_updated_at']
     assert reviewer.post('/api/listings/123/review', json={'status':'sold'}).status_code == 422
     assert reviewer.post('/api/listings/missing/review', json={'status':'viewed'}).status_code == 404
@@ -161,7 +161,7 @@ def test_browser_csv_refresh_keeps_review_and_xlsx_history(multi_app):
     preview = admin.post('/api/import/preview', content=b'url;price\nhttps://cian.ru/sale/flat/123/;10500000').json()
     assert admin.post('/api/import/confirm', json={'token':preview['token']}).status_code == 200
     assert admin.patch('/api/users/' + str(user['id']), json={'username':'agent2','display_name':'=Имя после переименования'}).status_code == 200
-    state = admin.get('/api/state').json()['listings']
+    state = admin.get('/api/state?full=1').json()['listings']
     assert [item['id'] for item in state] == ['789','456','123']
     item = state[-1]
     for key in ('review_status','review_updated_at','review_updated_by','review_version','first_seen'):
@@ -184,15 +184,15 @@ def test_disabling_password_reset_and_last_active_admin(multi_app):
     assert admin.patch('/api/users/1', json={'enabled':False}).status_code == 409
     assert admin.patch('/api/users/1', json={'role':'reviewer'}).status_code == 409
     assert admin.patch(path, json={'enabled':False}).status_code == 200
-    assert reviewer.get('/api/state').status_code == 401
+    assert reviewer.get('/api/state?full=1').status_code == 401
     assert login_attempt(reviewer, 'agent', 'reviewer-password-16').status_code == 401
     assert admin.patch(path, json={'enabled':True}).status_code == 200
     sign_in(reviewer, 'agent', 'reviewer-password-16')
     assert admin.patch(path, json={'password':'new-reviewer-password'}).status_code == 200
-    assert reviewer.get('/api/state').status_code == 401
+    assert reviewer.get('/api/state?full=1').status_code == 401
     assert login_attempt(reviewer, 'agent', 'reviewer-password-16').status_code == 401
     sign_in(reviewer, 'agent', 'new-reviewer-password')
-    assert reviewer.get('/api/state').status_code == 200
+    assert reviewer.get('/api/state?full=1').status_code == 200
     assert admin.post('/api/users', json={'username':'OWNER','display_name':'Duplicate','password':'valid-password-16'}).status_code == 409
     response = admin.post('/api/users', json={'username':'weak','display_name':'Weak','password':'SECRET7'})
     assert response.status_code == 422 and 'SECRET7' not in response.text

@@ -93,16 +93,16 @@ def test_import_preview_confirmation_updates_and_export(app_client, monkeypatch)
     def no_network(*args, **kwargs):
         raise AssertionError('CSV must never contact Cian')
     monkeypatch.setattr(source.httpx.HTTPTransport, 'handle_request', no_network)
-    assert client.get('/api/state').json()['listings'][0]['source'] == 'ЦИАН online'
+    assert client.get('/api/state?full=1').json()['listings'][0]['source'] == 'ЦИАН online'
     rows = [[URL, '', '11 950 000 ₽', '34,70 м²', CARD],
             ['http://cian.ru/sale/flat/456/?from=csv', '=CSV title', '12500000', '35', 'м. Сокол\n7 мин. транспортом']]
     preview = client.post('/api/import/preview', content=csv_file(rows)).json()
     assert (preview['found'], preview['added'], preview['updated']) == (2, 1, 1)
-    assert len(client.get('/api/state').json()['listings']) == 2
+    assert len(client.get('/api/state?full=1').json()['listings']) == 2
     result = client.post('/api/import/confirm', json={'token': preview['token']})
     assert result.status_code == 200
     assert result.json()['added'] == 1 and result.json()['updated'] == 1
-    listings = {row['id']: row for row in client.get('/api/state').json()['listings']}
+    listings = {row['id']: row for row in client.get('/api/state?full=1').json()['listings']}
     assert len(listings) == 3 and '999' in listings
     item = listings['123']
     assert item['first_seen'] == '2020-01-01T00:00:00+00:00'
@@ -116,7 +116,7 @@ def test_import_preview_confirmation_updates_and_export(app_client, monkeypatch)
     preview2 = client.post('/api/import/preview', content=csv_file(rows)).json()
     assert preview2['added'] == 0 and preview2['updated'] == 2
     assert client.post('/api/import/confirm', json={'token': preview2['token']}).status_code == 200
-    assert len(client.get('/api/state').json()['listings']) == 3
+    assert len(client.get('/api/state?full=1').json()['listings']) == 3
     book = load_workbook(io.BytesIO(client.get('/api/export.xlsx').content))
     data = list(book.active.values)
     assert 'Текст карточки' in data[0]
@@ -124,7 +124,7 @@ def test_import_preview_confirmation_updates_and_export(app_client, monkeypatch)
     assert any('ЦИАН CSV' in row for row in data[1:])
     # Migration/startup is repeatable and keeps imported data.
     importlib.reload(main)
-    assert len(client.get('/api/state').json()['listings']) == 3
+    assert len(client.get('/api/state?full=1').json()['listings']) == 3
 
 
 def test_invalid_expired_unauthorized_and_atomic_import(app_client):
@@ -134,12 +134,12 @@ def test_invalid_expired_unauthorized_and_atomic_import(app_client):
     assert unauthenticated(client, '/api/import/preview', content=csv_file()).status_code == 401
     malformed = csv_file([[URL, '', '100', '', ''], ['https://evil.test/', '', '1', '', '']])
     assert client.post('/api/import/preview', content=malformed).status_code == 422
-    assert client.get('/api/state').json()['listings'][0]['price'] == 14000000
+    assert client.get('/api/state?full=1').json()['listings'][0]['price'] == 14000000
     preview = client.post('/api/import/preview', content=csv_file()).json()
     with main.database() as conn:
         conn.execute('UPDATE import_previews SET created=0')
     assert client.post('/api/import/confirm', json={'token': preview['token']}).status_code == 409
-    assert len(client.get('/api/state').json()['listings']) == 2
+    assert len(client.get('/api/state?full=1').json()['listings']) == 2
 
 
 def test_captcha_is_expected_state(app_client, monkeypatch):
@@ -149,7 +149,7 @@ def test_captcha_is_expected_state(app_client, monkeypatch):
     monkeypatch.setattr(source, 'collect', blocked)
     assert client.post('/api/collect', json={}).status_code == 202
     for _ in range(100):
-        state = client.get('/api/state').json()
+        state = client.get('/api/state?full=1').json()
         if state['run']['status'] != 'running':
             break
         time.sleep(.01)
@@ -170,7 +170,7 @@ def test_inline_card_and_explicit_transport_update(app_client):
     transport = csv_file([[URL, '', '', '', 'м. Сокол\n7 мин. транспортом']])
     second = client.post('/api/import/preview', content=transport).json()
     client.post('/api/import/confirm', json={'token': second['token']})
-    row = next(row for row in client.get('/api/state').json()['listings'] if row['id'] == '123')
+    row = next(row for row in client.get('/api/state?full=1').json()['listings'] if row['id'] == '123')
     assert row['metro_time'] == '7 мин. транспортом' and row['metro_walk_minutes'] is None
     assert row['price'] == 11950000 and row['area'] == 34.7
     third = client.post('/api/import/preview', content=csv_file()).json()

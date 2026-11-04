@@ -31,7 +31,7 @@ def test_workflow(tmp_path, monkeypatch):
     importlib.reload(main)
     with TestClient(main.app, base_url='https://testserver') as client:
         assert client.get('/healthz').status_code == 200
-        assert client.get('/api/state').status_code == 401
+        assert client.get('/api/state?full=1').status_code == 401
         sign_in(client)
         assert client.get('/').status_code == 200
         assert client.post('/api/collect', json={}, headers={'Origin': 'https://evil.test'}).status_code == 403
@@ -39,7 +39,7 @@ def test_workflow(tmp_path, monkeypatch):
         monkeypatch.setattr(source, 'collect', lambda filters: source.parse_page(page()))
         assert client.post('/api/collect', json={}).status_code == 202
         for _ in range(100):
-            state = client.get('/api/state').json()
+            state = client.get('/api/state?full=1').json()
             if state['run']['status'] != 'running':
                 break
             time.sleep(.01)
@@ -55,7 +55,7 @@ def test_workflow(tmp_path, monkeypatch):
         monkeypatch.setattr(source, 'collect', fail)
         assert client.post('/api/collect', json={}).status_code == 202
         for _ in range(100):
-            state = client.get('/api/state').json()
+            state = client.get('/api/state?full=1').json()
             if state['run']['status'] != 'running':
                 break
             time.sleep(.01)

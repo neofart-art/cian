@@ -141,10 +141,11 @@ class VisitDateInput(BaseModel):
         return self
 
 
-def context(conn):
+def context(conn, property_id=None):
     groups = {}
     for row in conn.execute('''SELECT v.*,u.display_name AS updated_by_name,u.username AS updated_by_username
-                               FROM property_visits v JOIN users u ON u.id=v.updated_by ORDER BY v.id DESC'''):
+                               FROM property_visits v JOIN users u ON u.id=v.updated_by'''+(' WHERE v.property_id=?' if property_id is not None else '')+' ORDER BY v.id DESC',
+                            (property_id,) if property_id is not None else ()):
         # Preserve unknown columns in SQLite without publishing them or
         # requiring them to be JSON-serializable (legacy BLOBs, for example).
         fields = ('id','property_id','scheduled_at','status','outcome','preparation','comment',

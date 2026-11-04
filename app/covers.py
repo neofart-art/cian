@@ -170,7 +170,7 @@ class CoverCache:
             return None
         return path
 
-    def sources(self, row):
+    def sources(self, row, *, check_path=True):
         normal,thumb = row['cover_image_path'],row['cover_thumb_path']
         if not normal or not thumb:
             return {'cover_image_src':None,'cover_thumb_src':None}
@@ -178,7 +178,7 @@ class CoverCache:
         thumb_match = RELATIVE_PATH.fullmatch(thumb)
         if (not match or not thumb_match or match[1] != str(row['id']) or thumb_match[1] != match[1]
                 or thumb_match[2] != match[2] or match[3]!='normal' or thumb_match[3]!='thumb'
-                or self.path(normal) is None or self.path(thumb) is None):
+                or (check_path and (self.path(normal) is None or self.path(thumb) is None))):
             return {'cover_image_src':None,'cover_thumb_src':None}
         prefix = '/api/listings/'+match[1]+'/cover/'+match[2]+'/'
         return {'cover_image_src':prefix+'normal','cover_thumb_src':prefix+'thumb'}

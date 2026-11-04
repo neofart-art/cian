@@ -216,7 +216,7 @@ def test_realtor_roles_independent_statuses_and_refresh_xlsx(multi_app,caplog):
         sign_in(family,'reviewer','12345678')
         main.update_browser(last_success='2026-10-16T12:00:00+00:00',last_error='PRIVATE_BROWSER_ERROR')
         for client in (agent,family):
-            state=client.get('/api/state').json()
+            state=client.get('/api/state?full=1').json()
             assert state['last_success']=='2026-10-16T12:00:00+00:00'
             assert 'browser' not in state and 'run' not in state
             assert 'PRIVATE_BROWSER_ERROR' not in json.dumps(state)
@@ -245,7 +245,7 @@ def test_realtor_roles_independent_statuses_and_refresh_xlsx(multi_app,caplog):
             main.save_items(conn,[{'id':'123','price':13000000,'source':'ЦИАН browser'}],'2026')
         preview=admin.post('/api/import/preview',content=b'url;price\nhttps://cian.ru/sale/flat/123/;12500000').json()
         assert admin.post('/api/import/confirm',json={'token':preview['token']}).status_code==200
-        row=next(x for x in family.get('/api/state').json()['listings'] if x['id']=='123')
+        row=next(x for x in family.get('/api/state?full=1').json()['listings'] if x['id']=='123')
         for key in ('review_status','review_version','first_seen','realtor_status','realtor_comment','realtor_updated_at','realtor_updated_by','realtor_version'):
             assert row[key]==saved[key]
         assert row['mortgage_payment']==pytest.approx(mortgage_payment(12500000))
@@ -260,7 +260,7 @@ def test_realtor_roles_independent_statuses_and_refresh_xlsx(multi_app,caplog):
         assert post_realtor(admin,'/api/listings/123/realtor-review',json={'status':'pending','comment':''}).json()['realtor_comment']==''
         # Session revocation applies equally to the third role.
         assert admin.patch('/api/users/'+str(realtor['id']),json={'enabled':False}).status_code==200
-        assert agent.get('/api/state').status_code==401
+        assert agent.get('/api/state?full=1').status_code==401
     assert secret_comment not in caplog.text
 
 
@@ -301,7 +301,7 @@ def test_manual_and_scheduler_use_server_criteria_not_legacy_filters(multi_app,m
     main.scheduler_tick()
     assert calls[-1][1]=={'max_price':14500000,'metro_minutes':20}
     main.lock.release()
-    state=admin.get('/api/state').json()
+    state=admin.get('/api/state?full=1').json()
     assert state['criteria']=={'max_price':14500000,'metro_minutes':20}
     assert state['run']['filters']==json.dumps(state['criteria'],separators=(',',':'))
 

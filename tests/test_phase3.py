@@ -5,7 +5,7 @@ from tests.test_multiuser import multi_app
 
 
 def decide(admin, listing_id, decision):
-    row = next(item for item in admin.get('/api/state').json()['listings'] if str(listing_id) in item['listing_ids'])
+    row = next(item for item in admin.get('/api/state?full=1').json()['listings'] if str(listing_id) in item['listing_ids'])
     candidate = row['duplicate_candidate']
     return admin.post('/api/listings/'+str(listing_id)+'/duplicate-decision',json={
         'decision':decision,'candidate_id':candidate['id'],'source_property_id':candidate['source_property_id'],
@@ -83,7 +83,7 @@ def test_relisting_inherits_reviews_and_keeps_price_history(multi_app):
     assert all(row['realtor_status'] == 'approved' and row['realtor_comment'] == 'Хороший вариант' for row in rows)
     assert prices[-2:] == [12900000,12450000]
 
-    state = admin.get('/api/state').json()['listings']
+    state = admin.get('/api/state?full=1').json()['listings']
     item = next(entry for entry in state if entry['id'] == '701')
     assert item['listing_ids'] == ['700','701']
     assert item['relist_count'] == 1
@@ -109,13 +109,13 @@ def test_ambiguous_duplicate_requires_manual_decision(multi_app):
     assert result['added'] == 1
     assert result['possible_duplicates'] == 1
 
-    item = next(entry for entry in admin.get('/api/state').json()['listings'] if entry['id'] == '801')
+    item = next(entry for entry in admin.get('/api/state?full=1').json()['listings'] if entry['id'] == '801')
     assert 65 <= item['duplicate_candidate']['confidence'] < 85
     assert item['duplicate_candidate']['candidate_listing_id'] == '800'
 
     rejected = decide(admin,'801','different')
     assert rejected.status_code == 200
-    item = next(entry for entry in admin.get('/api/state').json()['listings'] if entry['id'] == '801')
+    item = next(entry for entry in admin.get('/api/state?full=1').json()['listings'] if entry['id'] == '801')
     assert item['duplicate_candidate'] is None
 
     old2 = sample('900', address='Москва, ул. Вавилова, д. 17', area=41.0, floor='6/14', price=13100000)
@@ -126,7 +126,7 @@ def test_ambiguous_duplicate_requires_manual_decision(multi_app):
         main.save_items(conn, [dict(old2, id='901', url='https://www.cian.ru/sale/flat/901/', price=11600000)],
                         '2026-10-18T11:00:00+00:00')
     assert decide(admin,'901','same').status_code == 200
-    state = admin.get('/api/state').json()['listings']
+    state = admin.get('/api/state?full=1').json()['listings']
     merged = next(entry for entry in state if entry['id'] == '901')
     assert merged['listing_ids'] == ['900','901']
     assert merged['relist_count'] == 1

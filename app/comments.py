@@ -63,10 +63,11 @@ def record(conn,pid,kind,text,now,user,version,listing_id,status=None):
         VALUES (?,?,?,?,?,?,?,?,?)""",(pid,pid,listing_id,kind,text,status,now,user,version))
 
 
-def context(conn):
+def context(conn,property_id=None):
     users={r['id']:dict(r) for r in conn.execute('SELECT id,display_name,username FROM users')}
     histories={}
-    for row in conn.execute('SELECT * FROM property_comment_history ORDER BY id DESC'):
+    for row in conn.execute('SELECT * FROM property_comment_history'+(' WHERE property_id=?' if property_id is not None else '')+' ORDER BY id DESC',
+                            (property_id,) if property_id is not None else ()):
         item=dict(row)
         author=users.get(item['changed_by'],{})
         item['changed_by_name']=author.get('display_name') or author.get('username')

@@ -7,6 +7,7 @@ import re
 import secrets
 import sqlite3
 import threading
+import time
 from contextlib import contextmanager, asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,7 +28,8 @@ from app.property_match import (best_match, candidate_rows, create_property, rec
 from app.criteria import browser_criteria
 from app.finance import mortgage_payment
 from app.covers import CoverCache, cover_url
-from app import viewings, comments
+from app import viewings, comments, feed
+from app.compression import JsonGzipMiddleware
 from app import source
 from app.csv_source import CianCsvSource, MAX_BYTES
 from app.browser_source import CianBrowserSource, BrowserAttention
@@ -42,7 +44,7 @@ lock = threading.Lock()
 
 @contextmanager
 def database():
-    conn = sqlite3.connect(DB, timeout=10)
+    conn = sqlite3.connect(DB, timeout=10, factory=feed.TimedConnection)
     conn.row_factory = sqlite3.Row
     conn.execute('PRAGMA foreign_keys=ON')
     try:
@@ -103,6 +105,7 @@ with database() as conn:
         CASE review_status WHEN 'new' THEN 0 WHEN 'viewed' THEN 1 ELSE 2 END,first_seen DESC,id)""")
 
 migrate_listings(database)
+feed.migrate(database)
 covers = CoverCache(DATA,database)
 
 LISTING_QUERY = '''SELECT l.*,u.display_name AS review_updated_by_name,u.username AS review_updated_by_username,
@@ -126,17 +129,28 @@ def listing_data(row):
     return item
 
 
-def property_context(conn):
+def property_context(conn, property_id=None):
     """Batch reads: /api/state does not execute queries per property row."""
-    rows = conn.execute(LISTING_QUERY).fetchall()
-    props = {row['id']:dict(row) for row in conn.execute('SELECT * FROM properties')}
+    rows = conn.execute(LISTING_QUERY+(' WHERE l.property_id=?' if property_id is not None else ''),
+                        (property_id,) if property_id is not None else ()).fetchall()
+    if property_id is None:
+        props = {row['id']:dict(row) for row in conn.execute('SELECT * FROM properties')}
+    else:
+        props = {row['id']:dict(row) for row in conn.execute('SELECT id,merged_into,current_listing_id FROM properties')}
+        prop = conn.execute('SELECT * FROM properties WHERE id=?',(property_id,)).fetchone()
+        if prop:props[property_id]=dict(prop)
     by_id = {row['id']:row for row in rows}
+    if property_id is not None:
+        for row in conn.execute('SELECT id,url,property_id FROM listings'):
+            by_id.setdefault(row['id'],row)
     groups, prices = {}, {}
     for row in rows:
         groups.setdefault(row['property_id'], []).append(row)
     for entries in groups.values():
         entries.sort(key=lambda row: (row['first_seen'] or '', row['id']))
-    for row in conn.execute('SELECT listing_id,property_id,observed_at,price FROM price_history ORDER BY observed_at,id'):
+    for row in conn.execute('SELECT listing_id,property_id,observed_at,price FROM price_history'+
+                            (' WHERE property_id=?' if property_id is not None else '')+' ORDER BY observed_at,id',
+                            (property_id,) if property_id is not None else ()):
         prices.setdefault(row['property_id'], []).append(dict(row))
     def root(pid):
         seen = set()
@@ -162,12 +176,12 @@ def property_context(conn):
         if not any(item['candidate_property_id']==target for item in pending.get(source,[])):
             pending.setdefault(source,[]).append(choice)
     return {'rows':rows,'props':props,'groups':groups,'prices':prices,'pending':pending,
-            'revision':identity_revision(conn),'by_id':by_id,'visits':viewings.context(conn),
-            'comments':comments.context(conn)}
+            'revision':identity_revision(conn),'by_id':by_id,'visits':viewings.context(conn,property_id),
+            'comments':comments.context(conn,property_id),'feed_version':feed.version(conn)}
 
 
 def property_listing_data(conn, row, context=None):
-    context = context or property_context(conn)
+    context = context or property_context(conn,row['property_id'])
     item = listing_data(row)
     pid = item['property_id']
     history = context['groups'].get(pid, [row])
@@ -197,6 +211,8 @@ def property_listing_data(conn, row, context=None):
     item['selection_version'] = context['props'][pid]['selection_version']
     item.update(comments.data(context['props'][pid],context['comments']))
     item['viewed_group'] = viewings.classification(item['visits'],item['viewing_documents_ready'])
+    epoch,revision=context['feed_version']
+    item.update(details_loaded=True,feed_epoch=epoch,feed_revision=revision)
     return item
 
 
@@ -332,6 +348,7 @@ async def lifespan(app):
 
 app = FastAPI(title='Хата — поиск квартир', docs_url=None, redoc_url=None, lifespan=lifespan)
 app.include_router(security.router())
+app.add_middleware(JsonGzipMiddleware)
 
 
 @app.exception_handler(RequestValidationError)
@@ -437,19 +454,58 @@ def login_page(request: Request):
     return html_document('login.html')
 
 
+def measured_response(payload,conn,began):
+    assembled=time.perf_counter()
+    body=json.dumps(payload,ensure_ascii=False,separators=(',',':'),allow_nan=False).encode()
+    done=time.perf_counter()
+    sql_ms=conn.sql_seconds*1000
+    timings={'sql':sql_ms,'assemble':max(0,(assembled-began)*1000-sql_ms),'serialize':(done-assembled)*1000}
+    headers={'Server-Timing':', '.join(k+';dur='+str(round(v,3)) for k,v in timings.items())}
+    log.info('state built sql_ms=%.3f assemble_ms=%.3f serialize_ms=%.3f queries=%s json_bytes=%s rows=%s',
+             timings['sql'],timings['assemble'],timings['serialize'],conn.query_count,len(body),len(payload.get('listings',[])))
+    return Response(body,media_type='application/json',headers=headers)
+
+
 @app.get('/api/state')
-def state(user=Depends(auth)):
+def state(request: Request, view: Literal['all','ours']='all', full: bool=False, user=Depends(auth)):
+    began=time.perf_counter()
     with database() as conn:
-        # Read listings and their run from one SQLite snapshot.
         conn.execute('BEGIN')
-        listings = grouped_listing_data(conn)
-        run = conn.execute('SELECT * FROM runs ORDER BY id DESC LIMIT 1').fetchone()
-        revision = identity_revision(conn)
-    saved_browser = browser_state()
-    result = {'listings': listings, 'identity_revision': revision, 'user': user, 'last_success': saved_browser.get('last_success'), 'criteria': browser_criteria()}
-    if user['role'] == 'admin':
-        result.update(run=dict(run) if run else None, browser=saved_browser)
-    return result
+        epoch,revision=feed.version(conn)
+        tag=feed.etag(epoch,revision,view,user,full)
+        headers={'ETag':tag,'Vary':'Accept-Encoding'}
+        if any(value.strip()=='*' or value.strip().removeprefix('W/')==tag.removeprefix('W/')
+               for value in request.headers.get('if-none-match','').split(',')):
+            return Response(status_code=304,headers={**headers,'Server-Timing':'sql;dur='+str(round(conn.sql_seconds*1000,3))})
+        if full:
+            listings=grouped_listing_data(conn)
+            if view=='ours':listings=[i for i in listings if i['in_our_list']]
+        else:
+            listings=feed.summaries(conn,view,lambda row:covers.sources(row,check_path=False))
+            identity=identity_revision(conn)
+            for item in listings:item.update(feed_epoch=epoch,feed_revision=revision,identity_revision=identity)
+        counts=feed.totals(conn)
+        saved_browser=json.loads(conn.execute('SELECT payload FROM browser_state WHERE id=1').fetchone()[0])
+        result={'listings':listings,'totals':counts,'identity_revision':identity_revision(conn),
+                'feed_epoch':epoch,'feed_revision':revision,'user':user,
+                'last_success':saved_browser.get('last_success'),'criteria':browser_criteria()}
+        if user['role']=='admin':
+            run=conn.execute('SELECT * FROM runs ORDER BY id DESC LIMIT 1').fetchone()
+            result.update(run=dict(run) if run else None,browser=saved_browser)
+        response=measured_response(result,conn,began)
+        response.headers.update(headers)
+        return response
+
+
+@app.get('/api/listings/{listing_id}/details')
+def listing_details(listing_id: str, user=Depends(auth)):
+    began=time.perf_counter()
+    with database() as conn:
+        conn.execute('BEGIN')
+        row=conn.execute('SELECT property_id FROM listings WHERE id=?',(listing_id,)).fetchone()
+        if row is None:raise HTTPException(404,'Объявление не найдено')
+        item=property_listing_data(conn,current_property_row(conn,row['property_id']))
+        return measured_response(item,conn,began)
 
 
 class Review(BaseModel):

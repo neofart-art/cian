@@ -233,10 +233,10 @@ footer{font-size:13px}
 .viewed-group-label{display:block;font-size:12px;font-weight:650;line-height:1.5;margin-bottom:7px;color:#263d37}
 .viewed-group-label[hidden]{display:none}
 .viewed-stage-toggle{display:block;width:100%;font-size:12px;line-height:1.4;min-height:44px;padding:8px;margin-bottom:9px;white-space:normal}
-.viewed-liked td{background:#e9f3fc;color:#263d37}
+.viewed-liked td{background:#e9f5e7;color:#263d37}
 .viewed-documents td{background:#e9f5e7;color:#263d37}
 .viewed-rejected td{background:#fbeceb;color:#563b38}
-.viewed-liked td:first-child{box-shadow:inset 5px 0 #4986b5}
+.viewed-liked td:first-child{box-shadow:inset 5px 0 #4c8951}
 .viewed-documents td:first-child{box-shadow:inset 5px 0 #4c8951}
 .viewed-rejected td:first-child{box-shadow:inset 5px 0 #bd635c}
 :is(.viewed-liked,.viewed-documents,.viewed-rejected) .object-cell strong{font-weight:600}
@@ -294,7 +294,7 @@ body[data-page] :is(.review-select,.realtor-select,.realtor-comment,.family-comm
 body[data-page] :is(.object-cell details,.object-cell summary,.comment-history summary,.characteristics>summary){font-size:14px;min-height:44px}
 body[data-page] .object-cell .characteristics>summary{display:flex;align-items:center}
 .membership-label{display:inline-block;font-size:14px;font-weight:650;border:1px solid #8cb5d8;border-radius:6px;background:#d9eafa;color:#254b70;padding:3px 7px;margin:7px 0}
-body[data-page=all] tr.in-our-list:not(.review-rejected) td{background:#e9f3fc;color:#263d37}
+body[data-page=all] tr.in-our-list:not(.review-rejected) td{background:#e9f5e7;color:#263d37}
 .listing-controls{display:flex;gap:14px;align-items:end;flex-wrap:wrap;margin:14px 0}
 .listing-controls label{flex:1 1 240px;margin:0;font-size:14px}
 .listing-controls input,.listing-controls select{display:block;margin-top:6px;width:100%}
@@ -346,10 +346,10 @@ body[data-page] :is(.visit-record,.visit-record strong,.visit-history>summary){f
   .realtor-cell{order:0}.photo-cell{order:1}.object-cell{order:2}.listing-col-1{order:3}.listing-col-3{order:4}
   .listing-col-4{order:5}.listing-col-10{order:6}.viewing-date-cell{order:6}.viewing-result-cell{order:7}.family-comment-cell{order:8}.selection-stage-cell{order:9}
   body[data-page=all] :is(.listing-col-5,.listing-col-6,.listing-col-7,.listing-col-9){display:none!important}
-  body[data-page=all] tr.in-our-list:not(.review-rejected){background:#e9f3fc}
+  body[data-page=all] tr.in-our-list:not(.review-rejected){background:#e9f5e7}
   body[data-page] tr.review-rejected{background:#faeeeb}
   body[data-page] tr.viewed-planned{background:#fffefa;border-left:5px solid #8a9690}
-  body[data-page] tr.viewed-liked{background:#e9f3fc;border-left:5px solid #4986b5}
+  body[data-page] tr.viewed-liked{background:#e9f5e7;border-left:5px solid #4c8951}
   body[data-page] tr.viewed-documents{background:#e9f5e7;border-left:5px solid #4c8951}
   body[data-page] tr.viewed-rejected{background:#fbeceb;border-left:5px solid #bd635c}
   body[data-page] .viewed-group{padding:10px}
@@ -386,7 +386,7 @@ body[data-page] .visit-date-actions{flex-basis:166px}
 body[data-page] .visit-date-actions button{min-width:80px}
 @media(max-width:900px){
  body[data-page] #viewed-section .viewed-table tr.viewed-planned{border-left:5px solid #8a9690}
- body[data-page] #viewed-section .viewed-table tr.viewed-liked{border-left:5px solid #4986b5}
+ body[data-page] #viewed-section .viewed-table tr.viewed-liked{border-left:5px solid #4c8951}
  body[data-page] #viewed-section .viewed-table tr.viewed-documents{border-left:5px solid #4c8951}
  body[data-page] #viewed-section .viewed-table tr.viewed-rejected{border-left:5px solid #bd635c}
 }
@@ -420,3 +420,13 @@ body[data-page] :is(.cover-placeholder,.compare-placeholder,footer){font-size:14
 body[data-page] .duplicate-box{font-size:16px}
 body[data-page] .duplicate-actions button{font-size:16px;min-height:44px}
 body[data-page] #compare-table :is(th,td){font-size:16px}
+
+/* Local presentation decisions: no blue selection background or blue stripe. */
+.membership-label{background:#e4eadf;border-color:#b7c8b3;color:#294b3e}
+body[data-page=all] tr.in-our-list:not(.review-liked):not(.review-rejected),
+body[data-page=all] tr.in-our-list:not(.review-liked):not(.review-rejected) td{background:#fffefa}
+body[data-page=all] tr.in-our-list.review-liked,body[data-page=all] tr.in-our-list.review-liked td{background:#e9f5e7;color:#263d37}
+body[data-page] #viewed-section .viewed-liked td{background:#e9f5e7;color:#263d37}
+body[data-page] #viewed-section .viewed-liked td:first-child{box-shadow:inset 5px 0 #4c8951}
+@media(max-width:900px){body[data-page] #viewed-section .viewed-table tr.viewed-liked{background:#e9f5e7;border-left-color:#4c8951}}
+#load-state{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:14px 0;font-size:16px}

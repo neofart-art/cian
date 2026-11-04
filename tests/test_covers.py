@@ -38,7 +38,7 @@ def row(main,key='9000'):
 
 
 def item(admin,key='9000'):
-    return next(entry for entry in admin.get('/api/state').json()['listings'] if key in entry['listing_ids'])
+    return next(entry for entry in admin.get('/api/state?full=1').json()['listings'] if key in entry['listing_ids'])
 
 
 def seed(main,key='9000',url=URL):
@@ -82,7 +82,7 @@ def test_new_photo_local_variants_authenticated_api_and_no_redownload(multi_app,
 
 def test_legacy_record_fills_later_and_migration_repeats(multi_app,monkeypatch):
     main,admin=multi_app
-    before=admin.get('/api/state').json()
+    before=admin.get('/api/state?full=1').json()
     assert all(x['cover_thumb_src'] is None for x in before['listings'])
     with main.database() as conn:
         columns={x['name']:x for x in conn.execute('PRAGMA table_info(listings)')}

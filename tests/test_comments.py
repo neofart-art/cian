@@ -150,7 +150,7 @@ def test_merge_preserves_both_comments_provenance_history_and_conflicts(multi_ap
     assert {h['origin_property_id'] for h in item['comment_history']}=={a['property_id'],b['property_id']}
     assert item['family_comment_version']>a['family_comment_version']
     assert save(admin,a,'Устаревшая связь').status_code==409
-    assert len([i for i in admin.get('/api/state').json()['listings'] if '123' in i['listing_ids']])==1
+    assert len([i for i in admin.get('/api/state?full=1').json()['listings'] if '123' in i['listing_ids']])==1
 
 
 def test_additive_migration_preserves_vendor_schema_sessions_and_is_idempotent(multi_app):
