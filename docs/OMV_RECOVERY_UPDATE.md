@@ -93,12 +93,13 @@ volumes:
 
 ~~~sh
 XATA_COMPOSE_PROJECT='ФАКТИЧЕСКИЙ_PROJECT_ИЗ_INSPECT'
+XATA_COMPOSE_SERVICE='ФАКТИЧЕСКИЙ_SERVICE_ИЗ_INSPECT'
 XATA_COMPOSE_FILE='/АБСОЛЮТНЫЙ/ПУТЬ/К/ПРОВЕРЕННОМУ/compose.yml'
 XATA_ENV_FILE='/АБСОЛЮТНЫЙ/ПУТЬ/К/ВОССТАНОВЛЕННОМУ/.env'
 docker compose --env-file "$XATA_ENV_FILE" -p "$XATA_COMPOSE_PROJECT" -f "$XATA_COMPOSE_FILE" config --quiet
 docker compose --env-file "$XATA_ENV_FILE" -p "$XATA_COMPOSE_PROJECT" -f "$XATA_COMPOSE_FILE" config --format json > "$XATA_BACKUP/candidate.compose.private.json"
 chmod 600 "$XATA_BACKUP/candidate.compose.private.json"
-docker compose --env-file "$XATA_ENV_FILE" -p "$XATA_COMPOSE_PROJECT" -f "$XATA_COMPOSE_FILE" build app
+docker compose --env-file "$XATA_ENV_FILE" -p "$XATA_COMPOSE_PROJECT" -f "$XATA_COMPOSE_FILE" build "$XATA_COMPOSE_SERVICE"
 ~~~
 
 Полный config содержит секреты; его не публикуют. Сверьте candidate с фактическим inspect по пунктам выше. Проверьте собранный образ отдельно на **копии** DB, не подключая production volume: integrity_check/foreign_key_check, число property/подборки/просмотров/комментариев и повторный запуск миграций. В копии отключите расписание и не подключайте сеть ЦИАН. Не импортируйте main в production через docker exec только ради проверки: это запустит миграции старого контейнера.
@@ -110,9 +111,9 @@ docker compose --env-file "$XATA_ENV_FILE" -p "$XATA_COMPOSE_PROJECT" -f "$XATA_
 Объявите короткое окно без пользовательских изменений/сбора, повторите snapshot в новый backup-каталог непосредственно перед заменой app. Убедитесь, что старый образ сохранён и локальные правки перенесены. Затем владелец выполняет:
 
 ~~~sh
-docker compose --env-file "$XATA_ENV_FILE" -p "$XATA_COMPOSE_PROJECT" -f "$XATA_COMPOSE_FILE" up -d --no-deps --no-build app
-docker compose --env-file "$XATA_ENV_FILE" -p "$XATA_COMPOSE_PROJECT" -f "$XATA_COMPOSE_FILE" ps app
-docker compose --env-file "$XATA_ENV_FILE" -p "$XATA_COMPOSE_PROJECT" -f "$XATA_COMPOSE_FILE" logs --tail=80 app
+docker compose --env-file "$XATA_ENV_FILE" -p "$XATA_COMPOSE_PROJECT" -f "$XATA_COMPOSE_FILE" up -d --no-deps --no-build "$XATA_COMPOSE_SERVICE"
+docker compose --env-file "$XATA_ENV_FILE" -p "$XATA_COMPOSE_PROJECT" -f "$XATA_COMPOSE_FILE" ps "$XATA_COMPOSE_SERVICE"
+docker compose --env-file "$XATA_ENV_FILE" -p "$XATA_COMPOSE_PROJECT" -f "$XATA_COMPOSE_FILE" logs --tail=80 "$XATA_COMPOSE_SERVICE"
 ~~~
 
 Нужна только пересборка app. Не запускать `down`, `down -v`, `volume rm`, `prune`, `up --remove-orphans` или обновление browser/NPM. Named volume остаётся тем же. Миграция additive; текущие sessions сохраняются.
@@ -134,20 +135,22 @@ docker compose --env-file "$XATA_ENV_FILE" -p "$XATA_COMPOSE_PROJECT" -f "$XATA_
 docker image load --input "$XATA_BACKUP/app-image.tar"
 ~~~
 
-Image ID возьмите из соответствующего `image.inspect.json`; задайте ему локальный rollback tag, создайте приватный override только `services.app.image` с этим tag и выполните после проверки config ту же команду `up -d --no-deps --no-build app` с override. Пример после подстановки подтверждённого image ID:
+Image ID возьмите из соответствующего `image.inspect.json`; задайте ему локальный rollback tag, создайте приватный override только `services.app.image` с этим tag и выполните после проверки config ту же команду `up -d --no-deps --no-build "$XATA_COMPOSE_SERVICE"` с override. Пример после подстановки подтверждённого image ID:
 
 ~~~sh
 XATA_ROLLBACK_IMAGE_ID='sha256:ФАКТИЧЕСКИЙ_ID_СОХРАНЁННОГО_ОБРАЗА'
 docker image tag "$XATA_ROLLBACK_IMAGE_ID" xata-app:rollback-local
-python3 - "$XATA_BACKUP/rollback.compose.json" <<'PY'
+python3 - "$XATA_BACKUP/rollback.compose.json" "$XATA_COMPOSE_SERVICE" <<'PY'
 import json,sys
 from pathlib import Path
 path=Path(sys.argv[1])
-path.write_text(json.dumps({'services':{'app':{'image':'xata-app:rollback-local'}}}))
+path.write_text(json.dumps({'services':{sys.argv[2]:{'image':'xata-app:rollback-local'}}}))
 path.chmod(0o600)
 PY
 docker compose --env-file "$XATA_ENV_FILE" -p "$XATA_COMPOSE_PROJECT" -f "$XATA_COMPOSE_FILE" -f "$XATA_BACKUP/rollback.compose.json" config --quiet
-docker compose --env-file "$XATA_ENV_FILE" -p "$XATA_COMPOSE_PROJECT" -f "$XATA_COMPOSE_FILE" -f "$XATA_BACKUP/rollback.compose.json" up -d --no-deps --no-build app
+docker compose --env-file "$XATA_ENV_FILE" -p "$XATA_COMPOSE_PROJECT" -f "$XATA_COMPOSE_FILE" -f "$XATA_BACKUP/rollback.compose.json" up -d --no-deps --no-build "$XATA_COMPOSE_SERVICE"
 ~~~
+
+Если `container.diff.txt` показывает изменения кода внутри writable layer, которых нет в сохранённом image, перед обновлением подготовьте проверенный локальный rollback image из старого образа и сохранённого runtime/app. Сам по себе image.save не включает writable layer; runtime backup сохраняет эти файлы, но переносить их надо отдельно. Если есть и другие изменения runtime/dependencies, остановитесь для их восстановления и проверки, а не откатывайте частично.
 
 Если приложение имело bind mounts с локальным кодом, верните и их подтверждённое прежнее содержимое из runtime backup; один rollback image не перекроет bind. Новые таблица/индекс/triggers совместимы с предыдущим кодом; проверка предыдущего приложения на копии выполняется CI. Произвольно старые версии без такой проверки не используйте. Восстановление DB из backup — отдельная аварийная процедура с остановкой записи и оценкой потери изменений, не штатный rollback этого патча.

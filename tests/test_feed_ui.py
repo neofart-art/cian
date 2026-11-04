@@ -3,6 +3,10 @@ import asyncio
 import importlib
 import json
 import os
+import socket
+import subprocess
+import threading
+import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -12,6 +16,74 @@ from tests.helpers import sign_in
 from tests.perf_dataset import seed
 
 pytestmark=pytest.mark.skipif(os.getenv('RUN_BROWSER_TESTS')!='1',reason='real browser opt in')
+
+
+class SlowServer:
+    def __init__(self,app,folder):
+        import uvicorn
+        self.app=app;self.started=threading.Event();self.release=threading.Event()
+        self.initial=True;self.fail_next=False;self.state_reads=[];self.writes=[];self.detail_reads=[]
+        self.inflight=0;self.maximum=0;self.wire=[]
+        key=folder/'server.key';cert=folder/'server.crt'
+        subprocess.run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-keyout',str(key),
+            '-out',str(cert),'-days','1','-subj','/CN=localhost','-addext','subjectAltName=IP:127.0.0.1'],
+            check=True,capture_output=True,timeout=15)
+        self.socket=socket.socket();self.socket.bind(('127.0.0.1',0))
+        self.url='https://127.0.0.1:'+str(self.socket.getsockname()[1])
+        self.server=uvicorn.Server(uvicorn.Config(self,log_level='error',lifespan='off',
+            ssl_keyfile=str(key),ssl_certfile=str(cert)))
+        self.thread=threading.Thread(target=self.server.run,kwargs={'sockets':[self.socket]},daemon=True)
+        self.thread.start();deadline=time.monotonic()+10
+        while not self.server.started:
+            if time.monotonic()>deadline:raise RuntimeError('isolated HTTPS server did not start')
+            time.sleep(.01)
+
+    async def __call__(self,scope,receive,send):
+        if scope['type']!='http':return await self.app(scope,receive,send)
+        path=scope['path'];state=path=='/api/state'
+        if path.endswith('/details'):self.detail_reads.append(path)
+        if scope['method'] in ('PATCH','POST','DELETE'):self.writes.append((scope['method'],path))
+        if not state:return await self.app(scope,receive,send)
+        headers=dict(scope.get('headers',[]))
+        self.state_reads.append(headers.get(b'if-none-match'))
+        self.inflight+=1;self.maximum=max(self.maximum,self.inflight);finished=False
+        def finish():
+            nonlocal finished
+            if not finished:self.inflight-=1;finished=True
+        async def synthetic_error(message):
+            body=json.dumps({'detail':message},ensure_ascii=False).encode()
+            await send({'type':'http.response.start','status':503,'headers':[
+                (b'content-type',b'application/json'),(b'content-length',str(len(body)).encode()),(b'cache-control',b'no-store')]})
+            await send({'type':'http.response.body','body':body});finish()
+        status=200;encoding=None;wire_bytes=0
+        async def shaped(message):
+            nonlocal status,encoding,wire_bytes
+            if message['type']=='http.response.start':
+                status=message['status'];encoding=dict(message['headers']).get(b'content-encoding')
+                await asyncio.sleep(.15);await send(message)
+            elif message['type']=='http.response.body':
+                body=message.get('body',b'');wire_bytes+=len(body)
+                for pos in range(0,len(body),4096):
+                    chunk=body[pos:pos+4096]
+                    await asyncio.sleep(len(chunk)/(256*1024))
+                    await send({'type':'http.response.body','body':chunk,'more_body':True})
+                if not message.get('more_body'):
+                    await send({'type':'http.response.body','body':b'','more_body':False})
+                    self.wire.append({'status':status,'bytes':wire_bytes,'encoding':encoding.decode() if encoding else None})
+                    finish()
+            else:await send(message)
+        try:
+            if self.initial:
+                self.initial=False;self.started.set()
+                if not await asyncio.to_thread(self.release.wait,15):raise TimeoutError('initial UI gate')
+                return await synthetic_error('Тестовый сбой первой загрузки')
+            if self.fail_next:
+                self.fail_next=False;return await synthetic_error('Тестовый фоновый сбой')
+            await self.app(scope,receive,shaped)
+        finally:finish()
+
+    def close(self):
+        self.release.set();self.server.should_exit=True;self.thread.join(timeout=10);self.socket.close()
 
 
 @pytest.fixture
@@ -25,47 +97,30 @@ def large_app(tmp_path,monkeypatch):
     seed(main)
     with TestClient(main.app,base_url='https://xata.test') as client:
         sign_in(client)
-        yield main,client
+        server=SlowServer(main.app,tmp_path)
+        try:yield main,client,server
+        finally:server.close()
 
 
 @pytest.mark.parametrize('engine',['chromium','webkit'])
 @pytest.mark.parametrize('width',[390,1440])
 @pytest.mark.parametrize('path',['/','/ours'])
 def test_slow_large_lists_loading_retry_single_flight_and_realtor_save(large_app,engine,width,path):
-    main,client=large_app
+    main,client,server=large_app
     async def scenario():
         from playwright.async_api import async_playwright,expect
-        started=asyncio.Event();release=asyncio.Event()
-        state_reads=[];detail_reads=[];writes=[];inflight=0;maximum=0;initial=True;fail_next=False
+        state_reads=server.state_reads;detail_reads=server.detail_reads;writes=server.writes
         async def bridge(route):
-            nonlocal inflight,maximum,initial,fail_next
-            req=route.request;url=urlsplit(req.url)
-            assert url.hostname=='xata.test','No external requests allowed'
-            if req.method in ('PATCH','POST','DELETE'):writes.append((req.method,url.path,req.post_data_json))
-            state=url.path=='/api/state'
-            if state:
-                inflight+=1;maximum=max(maximum,inflight);state_reads.append(req.headers.get('if-none-match'))
-                if initial:
-                    initial=False;started.set();await release.wait()
-                    inflight-=1
-                    await route.fulfill(status=503,content_type='application/json',body='{"detail":"Тестовый сбой первой загрузки"}');return
-                if fail_next:
-                    fail_next=False;inflight-=1
-                    await route.fulfill(status=503,content_type='application/json',body='{"detail":"Тестовый фоновый сбой"}');return
-            if url.path.endswith('/details'):detail_reads.append(url.path)
-            headers={k:v for k,v in req.headers.items() if k.lower() in
-                     ('content-type','origin','sec-fetch-site','x-csrf-token','if-none-match','accept-encoding')}
-            result=client.request(req.method,url.path+('?' + url.query if url.query else ''),
-                headers=headers,content=req.post_data_buffer,follow_redirects=False)
-            if state:
-                await asyncio.sleep(.15+int(result.headers.get('content-length','0'))/(256*1024))
-                inflight-=1
-            forwarded={k:v for k,v in result.headers.items() if k.lower() not in ('content-length','content-encoding','set-cookie','transfer-encoding')}
-            await route.fulfill(status=result.status_code,headers=forwarded,body=result.content)
+            url=urlsplit(route.request.url)
+            assert url.hostname=='127.0.0.1' and url.port==int(server.url.rsplit(':',1)[1]),'No external requests allowed'
+            await route.continue_()  # Real HTTP 304, including WebKit; never fulfill a mocked 304.
         async with async_playwright() as p:
             browser=await getattr(p,engine).launch(headless=True)
             context=await browser.new_context(viewport={'width':width,'height':900},is_mobile=width<900,
-                has_touch=width<900,timezone_id='America/Los_Angeles')
+                has_touch=width<900,timezone_id='America/Los_Angeles',ignore_https_errors=True)
+            from app.auth import COOKIE
+            await context.add_cookies([{'name':COOKIE,'value':client.cookies.get(COOKIE),'url':server.url,
+                'httpOnly':True,'secure':True,'sameSite':'Lax'}])
             await context.route('**/*',bridge)
             page=await context.new_page();page.set_default_timeout(15000);failures=[]
             page.on('pageerror',lambda e:failures.append(str(e)))
@@ -75,13 +130,13 @@ def test_slow_large_lists_loading_retry_single_flight_and_realtor_save(large_app
                     target=Path(folder);target.mkdir(parents=True,exist_ok=True)
                     await page.screenshot(path=str(target/(engine+'-'+str(width)+'-perf-'+('ours' if path=='/ours' else 'all')+'-'+name+'.png')))
             try:
-                await page.goto('https://xata.test'+path,wait_until='domcontentloaded')
-                await asyncio.wait_for(started.wait(),10)
+                await page.goto(server.url+path,wait_until='domcontentloaded')
+                assert await asyncio.to_thread(server.started.wait,10)
                 await expect(page.locator('#nav-all-count')).to_have_text('Загрузка…')
                 await expect(page.locator('#count')).to_have_text('Загрузка…')
                 await expect(page.locator('#last-sync')).to_contain_text('Загрузка…')
                 assert 'ещё не было' not in await page.locator('#last-sync').inner_text()
-                release.set()
+                server.release.set()
                 await expect(page.locator('#load-retry')).to_be_visible()
                 await expect(page.locator('#load-message')).to_contain_text('Не удалось загрузить')
                 await expect(page.locator('#count')).to_have_text('Загрузка…')
@@ -92,7 +147,7 @@ def test_slow_large_lists_loading_retry_single_flight_and_realtor_save(large_app
                 assert await page.locator('tr[data-property-id]').count()==(20 if path=='/ours' else 500)
                 assert len(detail_reads)==0,'Histories must not load on initial listing'
                 render_ms=await page.evaluate("performance.getEntriesByName('xata-list-render').at(-1).duration")
-                metrics={'engine':engine,'width':width,'page':path,'rows':20 if path=='/ours' else 500,'render_ms':round(render_ms,3),'network':'bridge with 150 ms delay and 256 KiB/s body-size delay; not physical device'}
+                metrics={'engine':engine,'width':width,'page':path,'rows':20 if path=='/ours' else 500,'render_ms':round(render_ms,3),'network':'real loopback HTTPS, 150 ms latency, 256 KiB/s shaped body; not physical device'}
                 print('XATA_UI_METRICS:'+json.dumps(metrics,ensure_ascii=False))
                 if os.getenv('UI_SCREENSHOT_DIR'):
                     destination=Path(os.environ['UI_SCREENSHOT_DIR']);destination.mkdir(parents=True,exist_ok=True)
@@ -111,9 +166,9 @@ def test_slow_large_lists_loading_retry_single_flight_and_realtor_save(large_app
                 await expect(field).to_have_value(draft)
                 assert await field.evaluate('e=>document.activeElement===e&&e.selectionStart===9')
                 await page.evaluate('Promise.all([refresh(true),refresh(true),refresh(true)])')
-                assert maximum==1
+                assert server.maximum==1
                 await expect(field).to_have_value(draft)
-                fail_next=True
+                server.fail_next=True
                 await page.evaluate('refresh(true)')
                 await expect(page.locator('#load-message')).to_contain_text('Показаны предыдущие данные')
                 await expect(field).to_have_value(draft)
@@ -154,14 +209,22 @@ def test_slow_large_lists_loading_retry_single_flight_and_realtor_save(large_app
                 # while hidden; the scheduled timer is cancelled.
                 await page.evaluate("Object.defineProperty(document,'hidden',{configurable:true,get:()=>true});document.dispatchEvent(new Event('visibilitychange'));")
                 count=len(state_reads)
+                deadline=time.monotonic()+5
+                while server.inflight:
+                    assert time.monotonic()<deadline,'cancelled request did not finish'
+                    await asyncio.sleep(.05)
                 await page.evaluate('poll()');await page.evaluate('refresh()')
                 assert len(state_reads)==count
                 await page.evaluate("Object.defineProperty(document,'hidden',{configurable:true,get:()=>false});document.dispatchEvent(new Event('visibilitychange'));")
                 await page.evaluate('refresh()')
-                assert len(state_reads)>count and maximum==1
+                assert len(state_reads)>count and server.maximum==1
+                assert any(v['status']==304 and v['bytes']==0 for v in server.wire)
+                assert any(v['status']==200 and v['encoding']=='gzip' for v in server.wire)
                 assert failures==[]
             except BaseException:
-                await shot('failure');raise
+                try:await shot('failure')
+                except Exception:pass
+                raise
             finally:
-                release.set();await context.close();await browser.close()
+                server.release.set();await context.close();await browser.close()
     asyncio.run(scenario())

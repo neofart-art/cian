@@ -47,4 +47,4 @@ def test_private_snapshot_does_not_deploy_or_print_secrets(tmp_path,monkeypatch,
     assert (destination.stat().st_mode&0o777)==0o700
     assert (destination/'container.inspect.json').stat().st_mode&0o777==0o600
     assert not any(c[:2] in [('docker','stop'),('docker','rm'),('docker','compose')] for c in calls)
-    assert any('backup(destination,pages=128,sleep=.05)' in value for c in calls for value in c)
+    assert any('backup(destination,pages=128,sleep=.05,progress=progress)' in value for c in calls for value in c)

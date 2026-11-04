@@ -4,6 +4,7 @@ import json
 import sqlite3
 import time
 import uuid
+from datetime import datetime
 
 LIST_FIELDS=('id','title','price','address','url','complex_name','area','floor','metro','metro_time',
              'metro_walk_minutes','source','first_seen','last_seen','last_imported','property_id',
@@ -105,14 +106,22 @@ def summaries(conn,view,cover_sources):
         JOIN properties p ON p.id=v.property_id WHERE p.merged_into IS NULL'''+visit_scope+' GROUP BY v.property_id'):
         if row['property_id'] in items:
             items[row['property_id']]['visit_count']=row['n']
+    # Legacy records may mix Z, UTC offsets and microseconds. Text ordering
+    # can select the wrong last viewing; compare actual instants without reading
+    # old comments or notes. IDs below are strictly integers from SQLite's PK.
+    latest={}
+    for row in conn.execute("""SELECT v.id,v.property_id,v.completed_at FROM property_visits v
+        JOIN properties p ON p.id=v.property_id WHERE p.merged_into IS NULL"""+visit_scope+" AND v.status='completed'"):
+        key=(datetime.fromisoformat(row['completed_at']),row['id'])
+        if row['property_id'] not in latest or key>latest[row['property_id']][0]:
+            latest[row['property_id']]=(key,row['id'])
+    latest_ids=','.join(str(int(value[1])) for value in latest.values()) or 'NULL'
     for row in conn.execute('''SELECT v.id,v.property_id,v.scheduled_at,v.status,v.outcome,v.completed_at,
         v.updated_at,v.updated_by,v.version,substr(v.comment,1,160) AS comment,length(v.comment)>160 AS comment_truncated,v.rejection_reasons,
         u.display_name AS updated_by_name,u.username AS updated_by_username
         FROM property_visits v JOIN properties p ON p.id=v.property_id JOIN users u ON u.id=v.updated_by
         WHERE p.merged_into IS NULL'''+visit_scope+''' AND
-        (v.status='planned' OR (v.status='completed' AND NOT EXISTS
-          (SELECT 1 FROM property_visits newer WHERE newer.property_id=v.property_id AND newer.status='completed'
-           AND (newer.completed_at>v.completed_at OR (newer.completed_at=v.completed_at AND newer.id>v.id)))))
+        (v.status='planned' OR v.id IN ('''+latest_ids+'''))
         ORDER BY v.id DESC'''):
         item=items.get(row['property_id'])
         if item:

@@ -468,6 +468,12 @@ def measured_response(payload,conn,began):
 
 @app.get('/api/state')
 def state(request: Request, view: Literal['all','ours']='all', full: bool=False, user=Depends(auth)):
+    # Old open tabs expect full editable comments at /api/state. Refuse that
+    # browser request rather than feeding a preview into an old write form.
+    # The new UI always selects a view; non-browser API clients retain the
+    # compact default and full=1 remains an explicit compatibility route.
+    if 'view' not in request.query_params and not full and request.headers.get('sec-fetch-site')=='same-origin':
+        raise HTTPException(409,'Обновите вкладку ХАТА для новой версии списка. Сначала сохраните открытый черновик; предыдущие данные не удалены.')
     began=time.perf_counter()
     with database() as conn:
         conn.execute('BEGIN')

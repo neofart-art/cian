@@ -64,11 +64,14 @@ def _snapshot(container,output):
     # sqlite backup() reads a consistent snapshot even with a WAL or a live writer.
     # Importing app.main here would run migrations: intentionally use sqlite3 only.
     database_backup='/data/backups/pre-update-'+uuid.uuid4().hex+'.sqlite3'
-    script="""import sqlite3,sys
+    script="""import sqlite3,sys,time
 from pathlib import Path
 target=Path(sys.argv[1]);target.parent.mkdir(parents=True,exist_ok=True)
+deadline=time.monotonic()+60
+def progress(status,remaining,total):
+    if time.monotonic()>deadline:raise TimeoutError('SQLite backup deadline exceeded')
 with sqlite3.connect('file:/data/xata.sqlite3?mode=ro',uri=True,timeout=30) as source,sqlite3.connect(target) as destination:
-    source.backup(destination,pages=128,sleep=.05)
+    source.backup(destination,pages=128,sleep=.05,progress=progress)
     assert destination.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
     assert destination.execute('PRAGMA foreign_key_check').fetchone() is None
 """

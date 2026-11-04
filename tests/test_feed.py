@@ -149,3 +149,30 @@ def test_revision_migration_idempotent_and_unknown_schema_preserved(multi_app):
         assert conn.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
         assert conn.execute('PRAGMA foreign_key_check').fetchone() is None
     assert client.get('/api/auth/me').status_code==200
+
+
+def test_summary_last_completed_uses_actual_instant_for_legacy_offsets_and_microseconds(multi_app):
+    main,client=multi_app
+    with main.database() as conn:
+        pid=conn.execute("SELECT property_id FROM listings WHERE id='123'").fetchone()[0]
+        for instant,outcome in [('2026-11-01T11:00:00+03:00','rejected'),('2026-11-01T10:00:00Z','liked'),
+                                ('2026-11-01T10:00:00.000001+00:00','rejected')]:
+            conn.execute("""INSERT INTO property_visits(property_id,status,outcome,completed_at,created_at,updated_at,updated_by)
+                VALUES (?,'completed',?,?,'2026','2026',1)""",(pid,outcome,instant))
+    result=client.get('/api/state').json()
+    item=next(i for i in result['listings'] if i['id']=='123')
+    assert len(item['visits'])==1
+    assert item['visits'][0]['completed_at']=='2026-11-01T10:00:00.000001+00:00'
+    assert item['viewed_group']==current(client)['viewed_group']=='rejected'
+
+
+def test_old_browser_tab_is_not_given_a_truncated_editable_comment(multi_app):
+    main,client=multi_app
+    value='Полный комментарий '*90
+    post_realtor(client,'/api/listings/123/realtor-review',json={'status':'approved','comment':value})
+    old=client.get('/api/state',headers={'Sec-Fetch-Site':'same-origin'})
+    assert old.status_code==409 and 'Обновите вкладку' in old.json()['detail']
+    assert current(client)['realtor_comment']==value
+    assert client.get('/api/state?view=all',headers={'Sec-Fetch-Site':'same-origin'}).status_code==200
+    legacy=client.get('/api/state?full=1',headers={'Sec-Fetch-Site':'same-origin'})
+    assert next(i for i in legacy.json()['listings'] if i['id']=='123')['realtor_comment']==value
