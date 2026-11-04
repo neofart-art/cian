@@ -185,11 +185,12 @@ def test_slow_large_lists_loading_retry_single_flight_and_realtor_save(large_app
                 await page.evaluate('Promise.all([refresh(true),refresh(true),refresh(true)])')
                 assert server.maximum==1
                 await expect(field).to_have_value(draft)
+                # Pause via the real visibility handler, including a poll that
+                # may still await browser/status and otherwise re-arm its timer.
+                # Forced refresh/Retry still work; reload restores real visibility.
+                await page.evaluate("async()=>{Object.defineProperty(document,'hidden',{configurable:true,get:()=>true});document.dispatchEvent(new Event('visibilitychange'));if(refreshPromise)await refreshPromise;}")
                 server.fail_next=True
                 await page.evaluate('refresh(true)')
-                # Hold the controlled error/retry phase stable: a later healthy
-                # scheduled poll legitimately hides Retry while we test Save.
-                await page.evaluate('clearTimeout(pollTimer)')
                 await expect(page.locator('#load-message')).to_contain_text('Показаны предыдущие данные')
                 await expect(field).to_have_value(draft)
                 assert await page.locator('tr[data-property-id]').count()==(20 if path=='/ours' else 500)
