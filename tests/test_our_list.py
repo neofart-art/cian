@@ -38,7 +38,7 @@ def test_two_urls_share_session_and_expose_only_their_tools(multi_app):
         assert marker not in all_html
     assert 'id="filters"' in all_html and 'id="rejected-section"' in all_html
     assert 'id="filters"' not in ours and 'id="rejected-section"' not in ours
-    for name in ('К просмотру','Оставляем в запасе','Проверка документов','Не понравилось','Риелтор / юрист','Этап отбора'):
+    for name in ('К просмотру','Оставляем в запасе','Проверка документов','Не понравилось','Риелтор','Этап отбора'):
         assert name in ours
     with TestClient(main.app,base_url='https://testserver') as stranger:
         for path in ('/','/ours'):
@@ -123,6 +123,8 @@ def test_one_time_migration_selects_any_existing_visit_only_and_preserves_vendor
     cancelled=create(admin,current(admin,'702'),status='cancelled',scheduled_at='2026-10-01T10:00:00Z')
     admin.post('/api/listings/703/review',json={'status':'liked'})
     with main.database() as conn:
+        # Reconstruct a pre-feature fixture; production migrations never drop columns.
+        conn.execute('DROP TRIGGER xata_list_revision_properties_update')
         conn.execute('ALTER TABLE properties DROP COLUMN in_our_list')
         conn.execute('ALTER TABLE properties DROP COLUMN selection_version')
         conn.execute("DELETE FROM schema_migrations WHERE name='our_list_initial_selection_v1'")

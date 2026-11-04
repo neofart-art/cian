@@ -16,6 +16,8 @@ def test_legacy_viewings_migrate_without_rebuild_or_loss(multi_app):
     main,admin=multi_app
     item=create(admin,status='completed',outcome='thinking',preparation='До поездки',comment='Старый общий итог')
     with main.database() as conn:
+        # Synthetic old-schema fixture, not a production downgrade.
+        conn.execute('DROP TRIGGER xata_list_revision_property_visits_update')
         conn.execute('DROP INDEX property_visits_request')
         for field in ('rejection_reasons','request_id','request_hash'):
             conn.execute('ALTER TABLE property_visits DROP COLUMN '+field)

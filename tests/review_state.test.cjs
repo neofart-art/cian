@@ -258,3 +258,17 @@ test('family text, independent versions and both comment histories survive stale
  assert.equal(merged.family_comment,'Сохранено');assert.equal(merged.realtor_version,3);
  assert.deepEqual(merged.comment_history.map(h=>h.id),[4,3,2]);
 });
+
+test('lightweight previews do not truncate loaded unchanged comments or lose history',()=>{
+  const full={id:'1',property_id:1,realtor_version:3,realtor_comment:'full '.repeat(200),family_comment_version:1,family_comment:'family full',comment_history:[{id:9,text:'history'}],details_loaded:true};
+  const summary={id:'1',property_id:1,realtor_version:3,realtor_comment:'full',realtor_comment_truncated:true,family_comment_version:1,family_comment:'family',family_comment_truncated:true,details_loaded:false};
+  const merged=state.merge(full,summary);
+  assert.equal(merged.realtor_comment,full.realtor_comment);
+  assert.equal(merged.realtor_comment_truncated,false);
+  assert.equal(merged.family_comment,full.family_comment);
+  assert.deepEqual(merged.comment_history,full.comment_history);
+  assert.equal(merged.details_loaded,false);
+  const changed=state.merge(full,{...summary,realtor_version:4});
+  assert.equal(changed.realtor_comment,'full');
+  assert.equal(changed.realtor_comment_truncated,true);
+});

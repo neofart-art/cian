@@ -146,6 +146,8 @@ def test_legacy_results_additive_idempotent_migration_no_reclassification(multi_
     create(admin,status='completed',outcome='thinking',comment='Не решили')
     create(admin,current(admin,'456'),status='completed',outcome='liked')
     with main.database() as conn:
+        # Remove only our new trigger when reconstructing a pre-feature fixture.
+        conn.execute('DROP TRIGGER xata_list_revision_properties_update')
         conn.execute('ALTER TABLE properties DROP COLUMN viewing_documents_ready')
         conn.execute('ALTER TABLE properties ADD COLUMN vendor_blob BLOB')
         conn.execute('UPDATE properties SET vendor_blob=?',(bytes([0,255]),))
