@@ -187,6 +187,9 @@ def test_slow_large_lists_loading_retry_single_flight_and_realtor_save(large_app
                 await expect(field).to_have_value(draft)
                 server.fail_next=True
                 await page.evaluate('refresh(true)')
+                # Hold the controlled error/retry phase stable: a later healthy
+                # scheduled poll legitimately hides Retry while we test Save.
+                await page.evaluate('clearTimeout(pollTimer)')
                 await expect(page.locator('#load-message')).to_contain_text('Показаны предыдущие данные')
                 await expect(field).to_have_value(draft)
                 assert await page.locator('tr[data-property-id]').count()==(20 if path=='/ours' else 500)
