@@ -13,7 +13,7 @@ from urllib.parse import urlsplit
 import pytest
 from fastapi.testclient import TestClient
 from tests.helpers import sign_in
-from tests.perf_dataset import seed
+from tests.perf_dataset import seed,realtor_note
 
 pytestmark=pytest.mark.skipif(os.getenv('RUN_BROWSER_TESTS')!='1',reason='real browser opt in')
 
@@ -162,7 +162,7 @@ def test_slow_large_lists_loading_retry_single_flight_and_realtor_save(large_app
                     await page.evaluate('refresh()')
                     await expect(row.locator('.viewing-date-cell .visit-overdue')).to_be_visible()
                 await row.locator('.realtor-edit').click()
-                await expect(row.locator('.realtor-comment')).to_have_value(('Риелтор проверил квартиру. '*35).strip())
+                await expect(row.locator('.realtor-comment')).to_have_value(realtor_note(1))
                 assert len(detail_reads)==1
                 draft='Сохранение риелтора: '+('полный текст, не усечённый preview. '*30).rstrip()
                 field=row.locator('.realtor-comment')

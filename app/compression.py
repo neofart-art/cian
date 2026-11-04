@@ -8,6 +8,7 @@ def qualities(value):
     result={}
     for part in value.lower().split(','):
         name,*params=part.strip().split(';')
+        name=name.strip()
         if not name:continue
         q=1.
         for param in params:
@@ -41,7 +42,8 @@ class JsonGzipMiddleware:
                 chunks.append(message.get('body',b''))
                 if message.get('more_body'):return
                 body=b''.join(chunks);headers=MutableHeaders(scope=start)
-                if 'accept-encoding' not in {v.strip().lower() for v in headers.get('vary','').split(',')}:
+                varied={v.strip().lower() for v in headers.get('vary','').split(',')}
+                if '*' not in varied and 'accept-encoding' not in varied:
                     headers.add_vary_header('Accept-Encoding')
                 use_gzip=gz>0 and (len(body)>=self.minimum_size or identity==0)
                 if 'identity' in q and q['identity']>gz:use_gzip=False

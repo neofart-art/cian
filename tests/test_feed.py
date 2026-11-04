@@ -87,7 +87,7 @@ def test_conditional_version_permissions_no_store_and_all_mutation_types(multi_a
 
 
 @pytest.mark.parametrize('accept,encoded,status',[
-    ('gzip',True,200),('identity',False,200),('gzip;q=0',False,200),
+    ('gzip',True,200),('gzip ; q=1, identity;q=0',True,200),('identity',False,200),('gzip;q=0',False,200),
     ('gzip;q=0,*;q=1',False,200),('*;q=.5',True,200),
     ('gzip;q=.4,identity;q=.8',False,200),('gzip;q=.9,identity;q=.1',True,200),
     ('identity;q=0,gzip;q=0',False,406),('*;q=0',False,406)])
