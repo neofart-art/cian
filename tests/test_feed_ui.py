@@ -219,7 +219,7 @@ def test_slow_large_lists_loading_retry_single_flight_and_realtor_save(large_app
                     await row.locator('.visit-date-ok').click()
                     await expect(row.locator('.visit-date-status')).to_have_text('Дата сохранена.')
                     await expect(control).to_have_value('12.12.2030')
-                    await page.reload()
+                    await before_reload();await page.reload()
                     await expect(row.locator('.visit-date-input')).to_have_value('12.12.2030')
                 await row.scroll_into_view_if_needed();await shot('list')
                 # Explicit visibility transition: no polling or force-free fetch
