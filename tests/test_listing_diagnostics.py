@@ -133,3 +133,23 @@ def test_dom_endpoint_auth_validation_and_no_collector_start(monkeypatch):
     assert client.post('/diagnostics/dom',headers=headers,json={'ids':['https://cian.ru/']}).status_code==422
     assert client.post('/diagnostics/dom',headers=headers,json={'ids':['123'],'url':'https://cian.ru/'}).status_code==422
     assert client.post('/diagnostics/dom',headers=headers,json={'ids':['123']*21}).status_code==422
+
+
+
+def test_navigation_during_read_only_probe_is_not_misattributed_to_old_page():
+    import asyncio
+    from collector.diagnostics import diagnose_current_page
+    async def scenario():
+        class Page:
+            url='https://cian.ru/cat.php?room1=1'
+            async def evaluate(self,*args):return {'snapshot':{'cards':[]},'targets':[]}
+        class Collector:
+            def __init__(self):self.lock=asyncio.Lock();self.page=Page();self.calls=0
+            async def inspect(self):
+                self.calls+=1
+                if self.calls==2:self.page.url='https://cian.ru/cat.php?token=PRIVATE_NEW_PAGE'
+                return 'authorized'
+        result=await diagnose_current_page(Collector(),['123'])
+        assert result['reason']=='page_changed_during_diagnostic' and result['targets']==[]
+        assert 'PRIVATE_NEW_PAGE' not in json.dumps(result)
+    asyncio.run(scenario())

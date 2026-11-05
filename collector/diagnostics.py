@@ -60,6 +60,7 @@ async def diagnose_current_page(collector,ids,max_price=None):
                 if status!='authorized':
                     return {'mode':'current_dom_read_only','status':status,'targets':[],'reason':'authorization_or_confirmation_required'}
                 stage='diagnostic_snapshot'
+                snapshot_url=collector.page.url
                 raw=await asyncio.wait_for(collector.page.evaluate(DOM_PROBE,ids),timeout=3)
                 normalized={};failures=0;failed_ids={};normalized_count=0;unique_ids=set()
                 for card in raw['snapshot']['cards']:
@@ -77,6 +78,8 @@ async def diagnose_current_page(collector,ids,max_price=None):
                 status=await collector.inspect()
                 if status!='authorized':
                     return {'mode':'current_dom_read_only','status':status,'targets':[],'reason':'page_changed_to_login_or_challenge'}
+                if collector.page.url!=snapshot_url:
+                    return {'mode':'current_dom_read_only','status':'unknown','targets':[],'reason':'page_changed_during_diagnostic'}
                 for target in raw['targets']:
                     item=normalized.get(target['id'])
                     inside=any(i<100 for i in target['card_indices'])
