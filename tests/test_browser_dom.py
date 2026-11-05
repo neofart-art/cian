@@ -359,7 +359,7 @@ def test_targeted_diagnostic_current_dom_no_navigation_scroll_import_or_private_
             requests=[]
             async def route(request):
                 requests.append(request.request.url)
-                await request.fulfill(status=200,content_type='text/html',body=HTML)
+                await request.fulfill(status=200,content_type='text/html; charset=utf-8',body=HTML)
             await context.route('**/*',route)
             page=context.pages[0]
             await page.goto(URL+'&token=DO_NOT_LEAK_QUERY')
