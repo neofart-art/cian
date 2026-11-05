@@ -23,12 +23,15 @@ function inspect(ids,state){
 }
 function run(ids){
   const available=typeof records!=='undefined'&&typeof rows!=='undefined'&&typeof XataReview!=='undefined'
-      &&typeof matchesSearch==='function'&&typeof pageMode!=='undefined'&&typeof listLoaded!=='undefined'
-      &&typeof searchText!=='undefined'&&typeof selectedFilter!=='undefined';
-  return inspect(ids,available?{ready:listLoaded,items:records.values(),page:pageMode,
-    searchActive:!!searchText,filter:selectedFilter,
-    row:item=>rows.get(XataReview.key(item))?.row,
-    section:item=>XataReview.section(item,pageMode),matchesSearch}:null);
+      &&typeof XataReview.section==='function'&&typeof XataReview.key==='function'&&typeof matchesSearch==='function';
+  const page=typeof pageMode!=='undefined'?pageMode:root.document?.body?.dataset.page||'all';
+  return inspect(ids,available?{
+    ready:typeof listLoaded!=='undefined'?listLoaded:records.size>0,
+    items:records.values(),page,
+    searchActive:typeof searchText!=='undefined'?!!searchText:!!root.document?.querySelector('#listing-search')?.value,
+    filter:typeof selectedFilter!=='undefined'?selectedFilter:'unknown',
+    row:item=>rows.get(XataReview.key(item))?.row||rows.get(String(item.id))?.row,
+    section:item=>XataReview.section(item,page),matchesSearch}:null);
 }
 if(typeof module!=='undefined'&&module.exports)module.exports={inspect,run};
 else root.xataInspectListings=run;
