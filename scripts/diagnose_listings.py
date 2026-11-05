@@ -35,7 +35,7 @@ def public_query(url):
         safe={k:v for k,v in query.items() if k in SAFE_PARAMS and all(
             value in ENUMS if k in ('deal_type','offer_type') else bool(re.fullmatch(r'[0-9]{1,12}',value)) for value in v)}
         host=(parsed.hostname or '').lower()
-        return {'valid_cian_https':parsed.scheme=='https' and not parsed.username and not parsed.password and
+        return {'valid_cian_https':len(url)<=4096 and parsed.scheme=='https' and not parsed.username and not parsed.password and
                 parsed.port in (None,443) and (host=='cian.ru' or host.endswith('.cian.ru')),
                 'public_parameters':safe,'has_unreported_parameters':any(k not in safe for k in query),
                 'explicit_conflicts':[k for k,v in EXPECTED.items() if k in safe and safe[k]!=[v]],

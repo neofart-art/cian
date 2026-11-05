@@ -91,6 +91,7 @@ def test_public_query_never_echoes_secrets_or_claims_saved_filters(monkeypatch):
     saved=diag.public_query('https://cian.ru/saved-search/?token='+secret)
     assert not saved['explicit_conflicts'] and 'room1' in saved['unconfirmed_constraints']
     assert secret not in json.dumps(saved)
+    assert diag.public_query('https://cian.ru/cat.php?token='+('x'*4100))['valid_cian_https'] is False
     assert secret not in json.dumps(diag.public_query('https://cian.ru/cat.php?maxprice='+secret))
 
 
