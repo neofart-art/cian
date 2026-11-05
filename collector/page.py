@@ -157,11 +157,21 @@ PAGINATION_SNAPSHOT = r"""() => {
   const visible = n => n.isConnected && !!(n.offsetWidth || n.offsetHeight || n.getClientRects().length)
       && getComputedStyle(n).visibility !== 'hidden';
   const nodes = [...document.querySelectorAll(
-      'a[rel="next"], [data-name="PaginationNext"], [aria-label], [data-name="Pagination"] a')];
-  const next = nodes.find(n => visible(n) && !n.matches('[disabled], [aria-disabled="true"]')
+      'a[rel="next"], [data-name="PaginationNext"], [aria-label], [data-name="Pagination"] a, [data-name="Pagination"] button')];
+  let next = nodes.find(n => visible(n) && !n.matches('[disabled], [aria-disabled="true"]')
       && (n.rel === 'next' || n.dataset.name === 'PaginationNext'
-          || /^(следующая( страница)?|далее|next( page)?)$/i.test(
-              (n.getAttribute('aria-label') || n.innerText || '').trim())));
+          || /^(следующая( страница)?|далее|дальше|next( page)?)$/i.test(
+              (n.getAttribute('aria-label') || n.getAttribute('title') || n.innerText || '').trim())));
+  if (!next) {
+    // Numbered public links are also user-facing pagination. Never fabricate URLs.
+    const current = Number(new URL(location.href).searchParams.get('p') || '1');
+    next = [...document.querySelectorAll('[data-name="Pagination"] a[href]')].find(n => {
+      if (!visible(n) || !/^\d+$/.test(n.innerText.trim())) return false;
+      try {
+        return Number(new URL(n.href).searchParams.get('p')) === current + 1;
+      } catch (_) { return false; }
+    });
+  }
   const link = next && (next.matches('a[href]') ? next : next.querySelector('a[href]'));
   return {href: link ? link.href : null, unsupported: !!next && !link};
 }"""

@@ -396,7 +396,7 @@ def test_targeted_diagnostic_current_dom_no_navigation_scroll_import_or_private_
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize('ending', ['end', 'repeat', 'captcha', 'http_error', 'changed_filter', 'unsupported'])
+@pytest.mark.parametrize('ending', ['end', 'numbered', 'next_label', 'repeat', 'captcha', 'http_error', 'changed_filter', 'unsupported'])
 def test_bounded_paginated_lazy_dom_collection(tmp_path, monkeypatch, ending):
     """Real Chromium scrolling, delayed DOM inserts and rendered public pagination."""
     async def scenario():
@@ -423,6 +423,10 @@ def test_bounded_paginated_lazy_dom_collection(tmp_path, monkeypatch, ending):
                 next_query = '?room1=2&p=2' if ending == 'changed_filter' else '?room1=1&p=2'
                 next_control = ('<button data-name="PaginationNext">Далее</button>' if ending == 'unsupported'
                                 else '<a rel="next" href="'+next_query+'">Следующая страница</a>')
+                if ending == 'numbered':
+                    next_control = '<nav data-name="Pagination"><a href="'+next_query+'">2</a></nav>'
+                if ending == 'next_label':
+                    next_control = '<nav data-name="Pagination"><a href="'+next_query+'">Дальше</a></nav>'
                 html = ('<span data-name="UserAvatar">Профиль</span><main>'+card(123)+'</main>'
                         '<div style="height:1800px">Spacer</div>'+next_control+
                         '<script>let added=false;addEventListener("scroll",()=>{if(!added && scrollY>300){'
@@ -448,9 +452,9 @@ def test_bounded_paginated_lazy_dom_collection(tmp_path, monkeypatch, ending):
                 assert navigations == [1, 2]
             else:
                 assert result['status'] == 'authorized'
-                expected = ['123', '456', '789'] if ending == 'end' else ['123', '456']
+                expected = ['123', '456', '789'] if ending in ('end', 'numbered', 'next_label') else ['123', '456']
                 assert [i['id'] for i in result['items']] == expected
-                assert coverage['stop_reason'] == dict(end='no_next_link', repeat='no_new_ids',
+                assert coverage['stop_reason'] == dict(end='no_next_link', numbered='no_next_link', next_label='no_next_link', repeat='no_new_ids',
                     changed_filter='unsafe_or_changed_pagination', unsupported='unsupported_next_control')[ending]
                 assert navigations == ([1] if ending in ('changed_filter', 'unsupported') else [1, 2])
                 assert coverage['duplicate_observations'] > 0
