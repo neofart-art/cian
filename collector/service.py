@@ -37,7 +37,7 @@ PAGE_SCROLL_SECONDS = 6
 # Start another navigation only with its normal timeout + readiness + final check reserve.
 FINAL_CHECK_RESERVE_SECONDS = 8
 MIN_PAGE_START_SECONDS = NAVIGATION_TIMEOUT_MS / 1000 + DOM_WAIT_SECONDS + SNAPSHOT_TIMEOUT_SECONDS
-HEALTH_TIMEOUT_SECONDS = 3
+HEALTH_TIMEOUT_SECONDS = 2
 SCROLL_WAIT_SECONDS = .5
 READINESS_TIMEOUT = 'Выдача ЦИАН не успела загрузиться за отведённое время. Повторите поиск позже.'
 
@@ -61,16 +61,20 @@ class Collector:
         self.page = None
         self.lock = asyncio.Lock()
         self.current = 'unknown'
+        self.page_crashed = False
         self.runtime_events = dict(page_crash=0, page_close=0, context_close=0, browser_disconnect=0)
 
     def watch_runtime(self):
         # Log event names/counters only; Playwright event objects may contain URLs.
         def event(name):
             self.runtime_events[name] += 1
+            if name == 'page_crash':
+                self.page_crashed = True
             self.current = 'error'
             log.warning('browser runtime event=%s count=%d', name, self.runtime_events[name])
         self.page.on('crash', lambda *_: event('page_crash'))
         self.page.on('close', lambda *_: event('page_close'))
+        self.page.on('domcontentloaded', lambda *_: setattr(self, 'page_crashed', False))
         self.context.on('close', lambda *_: event('context_close'))
         browser = self.context.browser
         if browser is not None:
@@ -78,7 +82,7 @@ class Collector:
 
     def runtime_status(self):
         browser = getattr(self.context, 'browser', None)
-        return dict(self.runtime_events,
+        return dict(self.runtime_events, page_crashed=self.page_crashed,
             page_closed=bool(getattr(self.page, 'is_closed', lambda: False)()),
             browser_connected=browser.is_connected() if browser is not None else None)
 
@@ -288,7 +292,7 @@ class Collector:
                             await self.page.locator(CARD_SELECTOR).count() or await self.visible(EMPTY_SELECTOR))
                 except (PlaywrightError, asyncio.TimeoutError) as exc:
                     runtime = self.runtime_status()
-                    if runtime['page_closed'] or runtime['page_crash'] or runtime['context_close'] or runtime['browser_connected'] is False:
+                    if runtime['page_closed'] or runtime['page_crashed'] or runtime['context_close'] or runtime['browser_connected'] is False:
                         log.warning('browser unavailable stage=%s runtime=%s', stage, runtime)
                         return self.result('error', items=[], error='Страница или процесс Chromium недоступны. Профиль не удалён; проверьте browser service.')
                     # Error messages can contain URLs/HTML. Log type/stage only.
@@ -401,7 +405,7 @@ app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None)
 async def health():
     collector = app.state.collector
     runtime = collector.runtime_status()
-    if runtime['page_closed'] or runtime['page_crash'] or runtime['context_close'] or runtime['browser_connected'] is False:
+    if runtime['page_closed'] or runtime['page_crashed'] or runtime['context_close'] or runtime['browser_connected'] is False:
         log.warning('browser health unavailable runtime=%s', runtime)
         raise HTTPException(503, 'Chromium page/context unavailable')
     try:

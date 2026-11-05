@@ -433,5 +433,30 @@ def test_health_error_does_not_claim_disconnect_and_is_bounded(monkeypatch, capl
     assert client.get('/healthz').status_code == 503
     assert time.monotonic()-started < 1
     collector.runtime_events['page_crash']=1
+    collector.page_crashed=True
     assert client.get('/healthz').json()['detail'] == 'Chromium page/context unavailable'
     assert 'PRIVATE' not in caplog.text and 'SECRET' not in caplog.text
+
+
+def test_runtime_event_counts_are_not_mistaken_for_current_crash(caplog):
+    from collector.service import Collector
+    class Emitter:
+        def __init__(self): self.callbacks={}
+        def on(self, event, callback): self.callbacks[event]=callback
+        def emit(self, event): self.callbacks[event]('PRIVATE URL MUST NOT BE LOGGED')
+    class Page(Emitter):
+        def is_closed(self): return False
+    class Browser(Emitter):
+        def is_connected(self): return True
+    context=Emitter();context.browser=Browser()
+    collector=Collector(context);collector.page=Page();collector.watch_runtime()
+    collector.page.emit('crash')
+    assert collector.runtime_status()['page_crashed'] is True
+    collector.page.emit('domcontentloaded')
+    assert collector.runtime_status()['page_crashed'] is False
+    assert collector.runtime_status()['page_crash']==1
+    context.browser.emit('disconnected')
+    assert collector.runtime_status()['browser_disconnect']==1
+    context.emit('close')
+    assert collector.runtime_status()['context_close']==1
+    assert 'PRIVATE' not in caplog.text
