@@ -357,3 +357,23 @@ def test_coverage_survives_browser_error_and_restart(browser_app, monkeypatch):
     assert state['browser']['coverage'] == coverage
     importlib.reload(main)
     assert main.browser_state()['coverage'] == coverage
+
+
+def test_short_scroll_timeout_is_not_reported_as_job_deadline(monkeypatch):
+    import asyncio
+    from collector import service
+    class Page:
+        async def evaluate(self, _):
+            raise asyncio.TimeoutError('PRIVATE URL AND HTML')
+    async def scenario():
+        collector = service.Collector(None)
+        collector.page = Page()
+        async def read(_):
+            return dict(status='authorized', items=[{'id': '123'}])
+        collector._read_page = read
+        result = await asyncio.wait_for(collector.collect('https://cian.ru/cat.php'), timeout=1)
+        assert result['status'] == 'error' and result['items'] == []
+        assert result['coverage']['stop_reason'] == 'error'
+        assert not collector.lock.locked()
+    monkeypatch.setattr(service, 'MANUAL', False)
+    asyncio.run(scenario())

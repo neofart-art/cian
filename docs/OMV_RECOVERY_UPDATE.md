@@ -1,6 +1,6 @@
 # OMV: обновление при отсутствующем каталоге исходников
 
-Эта инструкция предназначена для владельца сервера. В среде разработки deployment не выполняется. В этом обновлении меняется только app; browser с авторизованным профилем, Nginx Proxy Manager и другие проекты остаются работающими.
+Эта инструкция предназначена для владельца сервера. В среде разработки deployment не выполняется. Разделы 1–5 описывают обновление оптимизированного app. Доработка охвата collector требует также browser: её дополнительные шаги приведены в разделе 6. Nginx Proxy Manager и другие проекты не изменяются.
 
 **Сначала проверяется фактическая конфигурация. До её восстановления и сверки контейнер не пересоздавать.** Docker labels с путём compose не доказывают существование каталога. Данные находятся в существующем named volume `xata_xata_data`; новый пустой volume создавать нельзя.
 
@@ -154,3 +154,38 @@ docker compose --env-file "$XATA_ENV_FILE" -p "$XATA_COMPOSE_PROJECT" -f "$XATA_
 Если `container.diff.txt` показывает изменения кода внутри writable layer, которых нет в сохранённом image, перед обновлением подготовьте проверенный локальный rollback image из старого образа и сохранённого runtime/app. Сам по себе image.save не включает writable layer; runtime backup сохраняет эти файлы, но переносить их надо отдельно. Если есть и другие изменения runtime/dependencies, остановитесь для их восстановления и проверки, а не откатывайте частично.
 
 Если приложение имело bind mounts с локальным кодом, верните и их подтверждённое прежнее содержимое из runtime backup; один rollback image не перекроет bind. Новые таблица/индекс/triggers совместимы с предыдущим кодом; проверка предыдущего приложения на копии выполняется CI. Произвольно старые версии без такой проверки не используйте. Восстановление DB из backup — отдельная аварийная процедура с остановкой записи и оценкой потери изменений, не штатный rollback этого патча.
+
+
+## 6. Дополнение: обновление collector с пагинацией
+
+Выполняется **только владельцем после полной сверки конфигурации из раздела 3**. Само расследование четырёх отсутствующих ID не требует ни установки диагностического коммита, ни повторного полного сбора. Если актуальный compose/.env не восстановлены, на этом месте остановитесь: команды up неприменимы.
+
+Для этого изменения нужны новые образы app **и** browser. Схема SQLite, порты, memory/CPU/shm/pids, сети и имена volumes не меняются. Проверьте фактические ID/service browser, его profile mount и WORKDIR через приватный inspect. Не считайте именем профиля пример из README или новый автоматически созданный volume. Явно закрепите **существующий** profile volume в восстановленном Compose как external/name, аналогично xata_xata_data. Сохраните локальные изменения collector/browser entrypoint и их rollback-копии, как runtime/app в разделе 2.
+
+Перед заменой убедитесь, что расписание отключено в проверенной конфигурации (BROWSER_SCHEDULE_ENABLED=false), ручной noVNC не включён и нет running job. Не запускайте /collect для проверки обновления. После проверки задайте реальные значения:
+
+~~~sh
+XATA_BROWSER_ID='ПОДТВЕРЖДЁННЫЙ_ID_BROWSER'
+XATA_BROWSER_SERVICE='ПОДТВЕРЖДЁННОЕ_ИМЯ_SERVICE_BROWSER'
+docker inspect "$XATA_BROWSER_ID" > "$XATA_BACKUP/browser.inspect.private.json"
+docker diff "$XATA_BROWSER_ID" > "$XATA_BACKUP/browser.diff.private.txt"
+XATA_OLD_BROWSER_IMAGE=$(docker inspect --format '{{.Image}}' "$XATA_BROWSER_ID")
+docker image inspect "$XATA_OLD_BROWSER_IMAGE" > "$XATA_BACKUP/browser-image.inspect.private.json"
+docker image save --output "$XATA_BACKUP/browser-image.tar" "$XATA_OLD_BROWSER_IMAGE"
+docker compose --env-file "$XATA_ENV_FILE" -p "$XATA_COMPOSE_PROJECT" -f "$XATA_COMPOSE_FILE" config --quiet
+docker compose --env-file "$XATA_ENV_FILE" -p "$XATA_COMPOSE_PROJECT" -f "$XATA_COMPOSE_FILE" build "$XATA_COMPOSE_SERVICE" "$XATA_BROWSER_SERVICE"
+~~~
+
+Сохраните browser code из **подтверждённого** рабочего каталога через docker cp до остановки; если есть writable-layer изменения, image.tar их не содержит. Переносите локальные правки в новый код отдельно, без слепого копирования старого collector поверх исправления. Проверьте оба образа без подключения production volumes. Только затем в согласованное окно без пользовательских записей повторите свежий app snapshot из раздела 1, остановите browser для согласованной копии профиля. Блок ниже предполагает **предварительно подтверждённый** путь /profile; при другом mount сначала замените путь в команде docker cp:
+
+~~~sh
+docker compose --env-file "$XATA_ENV_FILE" -p "$XATA_COMPOSE_PROJECT" -f "$XATA_COMPOSE_FILE" stop "$XATA_BROWSER_SERVICE"
+docker cp "$XATA_BROWSER_ID:/profile" "$XATA_BACKUP/browser-profile"
+chmod -R go-rwx "$XATA_BACKUP/browser-profile"
+docker compose --env-file "$XATA_ENV_FILE" -p "$XATA_COMPOSE_PROJECT" -f "$XATA_COMPOSE_FILE" up -d --no-deps --no-build "$XATA_BROWSER_SERVICE" "$XATA_COMPOSE_SERVICE"
+docker compose --env-file "$XATA_ENV_FILE" -p "$XATA_COMPOSE_PROJECT" -f "$XATA_COMPOSE_FILE" ps "$XATA_BROWSER_SERVICE" "$XATA_COMPOSE_SERVICE"
+~~~
+
+Путь /profile в команде допустим **только если подтверждён inspect**; при другом mount используйте фактический путь. Ошибка backup — основание не продолжать up. Профиль содержит чувствительную сессию, его не публикуют. Не используйте профиль одновременно в двух Chromium. Обновление проверяется через health/status, сохранность прежних данных и обе страницы ХАТА. Статус unknown после перезапуска сам по себе не означает logout. Повторный сбор и включение расписания на этапе расследования не запускайте; реальная выдача требует отдельно согласованной точечной проверки.
+
+При откате сначала сделайте новые копии действующей DB и профиля (browser остановлен для копии). Возвращайте прежние **образы/проверенный код** app и browser через приватный image override и те же проверенные service names. Для browser загрузите сохранённый browser-image.tar, задайте отдельный rollback tag и добавьте его в override по аналогии с разделом 5; проверьте config перед up. Используйте текущие SQLite и профиль, не заменяйте их старыми backup: это сохраняет новые комментарии, историю и обновлённую сессию. Восстановление старого профиля/DB — отдельное аварийное действие с оценкой потери данных. Не удаляйте volumes, не запускайте down/prune и не меняйте NPM.

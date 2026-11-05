@@ -170,7 +170,8 @@ class Collector:
                         stage = 'page'
             except (PlaywrightError, asyncio.TimeoutError, ValueError) as exc:
                 log.warning('browser collection error stage=%s error_type=%s', stage, type(exc).__name__)
-                reason = 'job_deadline' if isinstance(exc, asyncio.TimeoutError) else 'error'
+                reason = ('job_deadline' if isinstance(exc, asyncio.TimeoutError)
+                          and asyncio.get_running_loop().time() - started >= JOB_TIMEOUT_SECONDS else 'error')
                 result = self.result('error', items=[], error='Сбор остановлен на ошибке или общем лимите времени. Старые объявления сохранены.')
             self.coverage.update(exhaustive=False, stop_reason=reason,
                 incomplete=(reason != 'no_next_link' or any(p.get('scroll_limit_reached') for p in self.coverage['pages_detail'])
