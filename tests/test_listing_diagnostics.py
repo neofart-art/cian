@@ -153,3 +153,23 @@ def test_navigation_during_read_only_probe_is_not_misattributed_to_old_page():
         assert result['reason']=='page_changed_during_diagnostic' and result['targets']==[]
         assert 'PRIVATE_NEW_PAGE' not in json.dumps(result)
     asyncio.run(scenario())
+
+
+
+def test_cli_never_executes_application_package_initializers(tmp_path):
+    import os
+    runtime=tmp_path/'runtime';app=runtime/'app';app.mkdir(parents=True)
+    marker=tmp_path/'forbidden-startup'
+    (app/'__init__.py').write_text("from pathlib import Path\nPath("+repr(str(marker))+").write_text('started')\nraise RuntimeError('must not run')\n")
+    (app/'browser_source.py').write_text("raise RuntimeError('must not run')\n")
+    path=tmp_path/'readonly.sqlite3'
+    with sqlite3.connect(path) as conn:conn.execute('CREATE TABLE listings(id TEXT PRIMARY KEY)')
+    before=hashlib.sha256(path.read_bytes()).digest()
+    result=subprocess.run([sys.executable,str(PATH),'--db',str(path),'123'],
+        env={**os.environ,'PYTHONPATH':str(runtime)},cwd=runtime,capture_output=True,text=True,timeout=10)
+    assert result.returncode==0,result.stderr
+    assert not marker.exists()
+    assert hashlib.sha256(path.read_bytes()).digest()==before
+    value=json.loads(result.stdout)
+    assert value['configuration']['application_modules_executed'] is False
+    assert 'browser_source.py' in value['runtime_hashes']

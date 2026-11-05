@@ -45,7 +45,7 @@ chmod 600 "$XATA_DIAGNOSTIC_REPORT"
 
 Для каждого ID проверяются listings, price_history, duplicate_candidates, identity_decisions, property_merge_audit, properties.current_listing_id и цепочки merged_into. Отчёт содержит first_seen/last_seen/last_imported/source, surviving property, текущий ID, все publication_ids, действующие коды оценок, последний просмотр, selection и ожидаемые разделы/свёрнутость без клиентских фильтров. Циклы, отсутствующий current pointer, неверный владелец и неполная legacy-схема не исправляются молча.
 
-Проверяются публичные параметры фактического запроса через runtime helper-функции и их противоречия подписям UI. Runtime source fingerprints помогают сверить локальные правки; само предсказание раздела основано на текущих правилах репозитория и не доказывает состояние открытой вкладки.
+Проверяются публичные параметры CIAN_SEARCH_URL из runtime environment и их противоречия подписям UI; без override строится ожидаемый default URL по текущей reference policy репозитория. Код production-модулей, включая app/__init__.py, **не исполняется**. Runtime source fingerprints помогают сверить локальные правки генератора URL/адаптера; это не доказательство последнего реально отправленного запроса. Само предсказание раздела основано на текущих правилах репозитория и не доказывает состояние открытой вкладки.
 
 Комментарии, пароли, cookies, HTML, DOM-тексты, полный search URL и произвольные query values не выводятся. Отчёт храните приватно. stored_listing_exists доказывает наличие записи. target_is_historical и current_listing_id показывают, под каким ID искать объединённую квартиру. Отсутствие строки **не доказывает**, что она не попадала в выдачу: прежние runs содержат агрегаты, не исторический per-ID trace.
 

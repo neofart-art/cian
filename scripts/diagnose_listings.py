@@ -11,7 +11,7 @@ import sqlite3
 import sys
 import urllib.error
 import urllib.request
-from urllib.parse import parse_qs,urlsplit
+from urllib.parse import parse_qs,urlsplit,urlencode
 
 SAFE_PARAMS={'deal_type','engine_version','offer_type','region','room1','object_type[0]','maxprice','foot_min','only_foot','p'}
 EXPECTED={'deal_type':'sale','offer_type':'flat','region':'1','room1':'1','object_type[0]':'1','only_foot':'2'}
@@ -46,31 +46,40 @@ def public_query(url):
 
 
 def configuration():
-    # These runtime modules are pure helpers; app.main must never be imported.
-    try:
-        from app.criteria import browser_criteria
-        from app.source import search_url
-        criteria=browser_criteria()
-        return {'runtime_helpers_available':True,'interface_criteria':criteria,
-                'override_present':bool(os.getenv('CIAN_SEARCH_URL')),
-                'effective_request':public_query(os.getenv('CIAN_SEARCH_URL') or search_url(criteria)),
-                'post_extraction_filter':'price is absent OR price <= max_price',
-                'fixed_interface_labels':['Moscow','secondary','one_room'],
-                'caveat':'Saved search filters and locally modified runtime code require separate verification.'}
-    except ImportError:
-        return {'runtime_helpers_available':False,'override_present':bool(os.getenv('CIAN_SEARCH_URL')),
-                'effective_request':public_query(os.getenv('CIAN_SEARCH_URL')) if os.getenv('CIAN_SEARCH_URL') else None}
+    # Reference policy only: never execute production application modules.
+    # Even an app/__init__.py with startup side effects must remain untouched.
+    override=os.getenv('CIAN_SEARCH_URL','')
+    observed=public_query(override) if override else None
+    criteria={'max_price':14500000,'metro_minutes':20}
+    if observed and observed['valid_cian_https']:
+        params=observed['public_parameters']
+        for key,field,low,high in [('maxprice','max_price',100000,1000000000),('foot_min','metro_minutes',1,60)]:
+            values=params.get(key,[])
+            if len(values)==1 and values[0].isascii() and values[0].isdigit() and low<=int(values[0])<=high:
+                criteria[field]=int(values[0])
+    query={'deal_type':'sale','engine_version':2,'offer_type':'flat','region':1,
+           'room1':1,'object_type[0]':1,'maxprice':criteria['max_price'],'foot_min':criteria['metro_minutes'],'only_foot':2}
+    return {'application_modules_executed':False,'interface_criteria':criteria,'override_present':bool(override),
+            'effective_request':observed if override else public_query('https://www.cian.ru/cat.php?'+urlencode(query)),
+            'derivation':'CIAN_SEARCH_URL from runtime env' if override else 'default URL from current repository reference policy',
+            'post_extraction_filter':'reference: price is absent OR price <= max_price',
+            'fixed_interface_labels':['Moscow','secondary','one_room'],
+            'caveat':'Runtime source hashes/local modifications and saved-search visible filters require verification; no application code executed.'}
 
 
 def runtime_hashes():
     result={}
-    try:
-        import app
-        folder=Path(next(iter(app.__path__)))
-        for name in ('main.py','browser_source.py','criteria.py','static/review-state.js'):
+    # Locate files without import app, importlib.find_spec or executing __init__.
+    locations=[Path.cwd()]+[Path(value) for value in sys.path if isinstance(value,str) and value]
+    for location in locations:
+        folder=location/'app'
+        if not (folder/'browser_source.py').is_file():continue
+        for name in ('__init__.py','main.py','browser_source.py','source.py','criteria.py','static/review-state.js'):
             path=folder/name
-            if path.is_file():result[name]=hashlib.sha256(path.read_bytes()).hexdigest()
-    except (ImportError,TypeError,OSError,StopIteration):pass
+            if path.is_file():
+                try:result[name]=hashlib.sha256(path.read_bytes()).hexdigest()
+                except OSError:pass
+        break
     return result
 
 
