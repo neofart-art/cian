@@ -55,7 +55,8 @@ jobs:
           node --check app/static/compare.js
           node --check app/static/login.js
           node --check app/static/review-state.js
-          node --test tests/review_state.test.cjs
+          node --check scripts/diagnose_ui.js
+          node --test tests/review_state.test.cjs tests/listing_diagnostics.test.cjs
       - name: Install test Chromium and WebKit
         timeout-minutes: 5
         run: python -m playwright install --with-deps chromium webkit

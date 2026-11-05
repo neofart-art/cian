@@ -1140,3 +1140,44 @@ def test_our_page_agenda_conflicts_repeat_results_and_comparison_on_phone(two_pa
             assert errors==[]
             await context.close();await browser.close()
     asyncio.run(scenario())
+
+
+
+def test_read_only_ui_diagnostic_reports_collapsed_history_and_actual_search(two_page_app):
+    from pathlib import Path
+    main,client,current=two_page_app
+    script=(Path(__file__).parents[1]/'scripts/diagnose_ui.js').read_text()
+    async def scenario():
+        from playwright.async_api import async_playwright,expect
+        calls=[]
+        async def bridge(route):
+            request=route.request;parsed=urlsplit(request.url)
+            assert parsed.hostname=='xata.test'
+            calls.append((request.method,parsed.path))
+            headers={k:v for k,v in request.headers.items() if k.lower() in ('content-type','origin','sec-fetch-site','x-csrf-token','if-none-match','accept-encoding')}
+            response=client.request(request.method,parsed.path+('?' + parsed.query if parsed.query else ''),
+                headers=headers,content=request.post_data_buffer,follow_redirects=False)
+            await route.fulfill(status=response.status_code,headers={k:v for k,v in response.headers.items()
+                if k.lower() not in ('content-length','content-encoding','set-cookie','transfer-encoding')},body=response.content)
+        async with async_playwright() as p:
+            browser=await p.chromium.launch(headless=True)
+            context=await browser.new_context(viewport={'width':390,'height':844})
+            await context.route('**/*',bridge)
+            page=await context.new_page()
+            await page.goto('https://xata.test/')
+            await expect(page.locator('#nav-all-count')).to_have_text('9')
+            await page.evaluate(script)
+            await page.wait_for_load_state('networkidle')
+            before=len([c for c in calls if c[1].startswith('/api/')])
+            report=await page.evaluate('xataInspectListings(["9501","9507","99999"])')
+            assert report['ready'] and report['targets'][0]['loaded_matches'][0]['ancestor_collapsed']
+            assert report['targets'][0]['loaded_matches'][0]['section']=='refused'
+            assert report['targets'][1]['loaded_matches'][0]['rendered']
+            assert not report['targets'][2]['loaded_matches']
+            assert len([c for c in calls if c[1].startswith('/api/')])==before
+            await page.locator('#listing-search').fill('9507')
+            filtered=await page.evaluate('xataInspectListings(["9501"])')
+            assert filtered['search_active'] and not filtered['targets'][0]['loaded_matches'][0]['matches_search']
+            assert not await page.locator('#rejected-section').evaluate('e=>e.open')
+            await context.close();await browser.close()
+    asyncio.run(scenario())
