@@ -176,9 +176,31 @@ PAGINATION_SNAPSHOT = r"""() => {
   return {href: link ? link.href : null, unsupported: !!next && !link};
 }"""
 
+CARD_PROGRESS = r"""() => {
+  const visible = n => n.isConnected && !!(n.offsetWidth || n.offsetHeight || n.getClientRects().length)
+      && getComputedStyle(n).visibility !== 'hidden';
+  const ids = new Set();
+  for (const card of [...document.querySelectorAll("""+json.dumps(CARD_SELECTOR)+r""")].slice(0, 100)) {
+    if (!visible(card)) continue;
+    const link = [...card.querySelectorAll('a[href*="/sale/flat/"]')].find(visible);
+    if (!link) continue;
+    try {
+      const url = new URL(link.href), match = /^\/sale\/flat\/(\d+)\/?$/.exec(url.pathname);
+      if (match && /(^|\.)cian\.ru$/.test(url.hostname)) ids.add(match[1].replace(/^0+(?=\d)/, ''));
+    } catch (_) {}
+  }
+  return {ids: [...ids]};
+}"""
+
 SCROLL_RESULTS = r"""() => {
-  // Ordinary viewport scroll only. No hidden DOM/state/network inspection.
+  // Scroll toward the last rendered card, rather than traverse a long unrelated footer.
+  const nodes = [...document.querySelectorAll("""+json.dumps(CARD_SELECTOR)+r""")].filter(n =>
+      n.isConnected && !!(n.offsetWidth || n.offsetHeight || n.getClientRects().length)
+      && getComputedStyle(n).visibility !== 'hidden');
   const before = scrollY;
-  window.scrollBy(0, Math.max(300, Math.round(innerHeight * .85)));
-  return {moved: scrollY !== before, bottom: scrollY + innerHeight >= document.documentElement.scrollHeight - 2};
+  const last = nodes[nodes.length - 1];
+  const target = Math.max(scrollY + innerHeight * .75,
+      last ? scrollY + last.getBoundingClientRect().bottom - innerHeight * .5 : 0);
+  window.scrollTo({top: target, behavior: 'instant'});
+  return {moved: scrollY !== before};
 }"""

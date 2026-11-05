@@ -497,3 +497,89 @@ def test_collection_hard_limits(tmp_path, monkeypatch, limit):
             assert not collector.lock.locked()
             await context.close()
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('last_page', ['repeat', 'new', 'captcha', 'closed'])
+def test_four_pages_with_28_cards_and_long_footer_stop_without_repeated_full_reads(tmp_path, monkeypatch, last_page):
+    """Regression for OMV: 84 IDs, 59 scrolls, then job_deadline on page four."""
+    async def scenario():
+        from urllib.parse import parse_qs, urlsplit
+        from playwright.async_api import async_playwright
+        from collector import service
+        monkeypatch.setattr(service,'SCROLL_WAIT_SECONDS',.05)
+        navigations=[]
+        async def route(request):
+            p=int(parse_qs(urlsplit(request.request.url).query).get('p',['1'])[0])
+            navigations.append(p)
+            offset=(p-1)*28 if p<4 or last_page!='repeat' else 0
+            cards=''.join('<article data-name="CardComponent" style="min-height:180px">'
+                '<a href="https://cian.ru/sale/flat/'+str(offset+i)+'/"><span data-mark="OfferTitle">Квартира</span></a>'
+                '<span data-mark="MainPrice">12 000 000 ₽</span><p>'+'Описание '*100+'</p></article>'
+                for i in range(1,29))
+            if p==4 and last_page=='captcha':cards+='<p>Подтвердите, что вы человек</p>'
+            next_link='<a rel="next" href="?room1=1&p='+str(p+1)+'">Дальше</a>' if p<4 else ''
+            html=('<!doctype html><meta charset="utf-8"><span data-name="UserAvatar">Профиль</span>'
+                  +cards+next_link+'<footer style="height:200000px">Длинный низ страницы</footer>')
+            await request.fulfill(status=200,content_type='text/html; charset=utf-8',body=html)
+        async with async_playwright() as playwright:
+            context=await playwright.chromium.launch_persistent_context(str(tmp_path/'profile'),headless=True)
+            await context.route('**/*',route)
+            collector=service.Collector(context);collector.page=context.pages[0];collector.watch_runtime()
+            original=collector.inspect
+            async def inspect(code=200):
+                if len(navigations)==4 and last_page=='closed' and not collector.page.is_closed():
+                    await collector.page.close()
+                return await original(code)
+            collector.inspect=inspect
+            started=time.monotonic()
+            result=await asyncio.wait_for(collector.collect(URL),timeout=15)
+            assert time.monotonic()-started < 15
+            coverage=result['coverage']
+            assert navigations==[1,2,3,4]
+            assert coverage['pages']==4 and coverage['scrolls']<=8
+            assert coverage['snapshots']<=4
+            assert coverage['stop_reason']!='job_deadline'
+            if last_page=='repeat':
+                assert result['status']=='authorized' and len(result['items'])==84
+                assert coverage['stop_reason']=='no_new_ids'
+            elif last_page=='new':
+                assert result['status']=='authorized' and len(result['items'])==100
+                assert coverage['stop_reason']=='item_limit'
+            else:
+                assert result['items']==[]
+                assert result['status']==('confirmation_required' if last_page=='captcha' else 'error')
+            if last_page!='closed':
+                assert await collector.page.evaluate('scrollY+innerHeight<document.documentElement.scrollHeight')
+            else:
+                assert collector.runtime_status()['page_close']==1
+                assert collector.runtime_status()['page_closed'] is True
+            assert not collector.lock.locked()
+            await context.close()
+    asyncio.run(scenario())
+
+
+def test_late_challenge_during_unchanged_id_probe_discards_batch(tmp_path, monkeypatch):
+    async def scenario():
+        from playwright.async_api import async_playwright
+        from collector import service
+        monkeypatch.setattr(service,'SCROLL_WAIT_SECONDS',.05)
+        html=HTML+'<footer style="height:200000px"></footer>'
+        async with async_playwright() as playwright:
+            context=await playwright.chromium.launch_persistent_context(str(tmp_path/'profile'),headless=True)
+            await context.route('**/*',lambda route:route.fulfill(
+                status=200,content_type='text/html; charset=utf-8',body=html))
+            collector=service.Collector(context);collector.page=context.pages[0]
+            original=collector.inspect;calls=0
+            async def inspect(code=200):
+                nonlocal calls
+                calls+=1
+                if calls==4:
+                    await collector.page.evaluate("document.body.insertAdjacentHTML('beforeend','<p>Подтвердите, что вы человек</p>')")
+                return await original(code)
+            collector.inspect=inspect
+            result=await asyncio.wait_for(collector.collect(URL),timeout=5)
+            assert result['status']=='confirmation_required' and result['items']==[]
+            assert result['coverage']['snapshots']==1
+            assert not collector.lock.locked()
+            await context.close()
+    asyncio.run(scenario())

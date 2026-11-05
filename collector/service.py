@@ -17,7 +17,7 @@ from collector.diagnostics import diagnose_current_page
 
 from collector.page import (ATTENTION, AUTH_SELECTOR, CARD_SELECTOR, CHALLENGE_SELECTOR,
                             LOGIN_SELECTOR, EMPTY_SELECTOR, VISIBLE_NODES, CARD_SNAPSHOT,
-                            PAGINATION_SNAPSHOT, SCROLL_RESULTS, next_search_url,
+                            PAGINATION_SNAPSHOT, SCROLL_RESULTS, CARD_PROGRESS, next_search_url,
                             UNRECOGNIZED_CARDS, classify, normalize_card, validate_url)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
@@ -31,7 +31,13 @@ DOM_WAIT_SECONDS = 8
 JOB_TIMEOUT_SECONDS = 90
 MAX_ITEMS = 100
 MAX_PAGES = 4
-MAX_SCROLLS = 24
+MAX_SCROLLS = 6
+NO_NEW_ID_ATTEMPTS = 2
+PAGE_SCROLL_SECONDS = 6
+# Start another navigation only with its normal timeout + readiness + final check reserve.
+FINAL_CHECK_RESERVE_SECONDS = 8
+MIN_PAGE_START_SECONDS = NAVIGATION_TIMEOUT_MS / 1000 + DOM_WAIT_SECONDS + SNAPSHOT_TIMEOUT_SECONDS
+HEALTH_TIMEOUT_SECONDS = 3
 SCROLL_WAIT_SECONDS = .5
 READINESS_TIMEOUT = 'Выдача ЦИАН не успела загрузиться за отведённое время. Повторите поиск позже.'
 
@@ -55,6 +61,26 @@ class Collector:
         self.page = None
         self.lock = asyncio.Lock()
         self.current = 'unknown'
+        self.runtime_events = dict(page_crash=0, page_close=0, context_close=0, browser_disconnect=0)
+
+    def watch_runtime(self):
+        # Log event names/counters only; Playwright event objects may contain URLs.
+        def event(name):
+            self.runtime_events[name] += 1
+            self.current = 'error'
+            log.warning('browser runtime event=%s count=%d', name, self.runtime_events[name])
+        self.page.on('crash', lambda *_: event('page_crash'))
+        self.page.on('close', lambda *_: event('page_close'))
+        self.context.on('close', lambda *_: event('context_close'))
+        browser = self.context.browser
+        if browser is not None:
+            browser.on('disconnected', lambda *_: event('browser_disconnect'))
+
+    def runtime_status(self):
+        browser = getattr(self.context, 'browser', None)
+        return dict(self.runtime_events,
+            page_closed=bool(getattr(self.page, 'is_closed', lambda: False)()),
+            browser_connected=browser.is_connected() if browser is not None else None)
 
     async def visible(self, selector):
         return await asyncio.wait_for(
@@ -86,12 +112,14 @@ class Collector:
         if MANUAL or self.lock.locked():
             raise HTTPException(409, 'Browser busy or manual access enabled')
         async with self.lock:
-            self.coverage = dict(pages=0, scrolls=0, snapshots=0,
+            self.coverage = dict(pages=0, scrolls=0, snapshots=0, progress_probes=0,
                 matching_node_observations=0, dom_skipped_observations=0,
                 normalized_observations=0, normalization_errors=0, over_snapshot_limit_observations=0,
                 duplicate_observations=0, unique_cards=0, pages_detail=[])
             items = {}
-            started = asyncio.get_running_loop().time()
+            loop = asyncio.get_running_loop()
+            started = loop.time()
+            job_deadline = started + JOB_TIMEOUT_SECONDS
             reason = 'error'
             result = None
             stage = 'page'
@@ -99,50 +127,80 @@ class Collector:
                 async with asyncio.timeout(JOB_TIMEOUT_SECONDS):
                     visited = set()
                     for page_number in range(1, MAX_PAGES + 1):
+                        if page_number > 1 and job_deadline - loop.time() < MIN_PAGE_START_SECONDS + FINAL_CHECK_RESERVE_SECONDS:
+                            reason = 'time_budget'
+                            break
                         if url in visited:
                             reason = 'repeated_page'
                             break
                         visited.add(url)
                         self.coverage['pages'] += 1
+                        page_started = loop.time()
                         page_before = len(items)
                         detail = dict(number=page_number, scrolls=0, new_ids=0)
                         self.coverage['pages_detail'].append(detail)
                         result = await self._read_page(url)
+                        observed_ids = set()
                         stalls = 0
-                        at_bottom = False
+                        scroll_deadline = min(loop.time() + PAGE_SCROLL_SECONDS,
+                                              job_deadline - FINAL_CHECK_RESERVE_SECONDS)
                         for scroll_number in range(MAX_SCROLLS + 1):
                             if result['status'] != 'authorized':
                                 reason = result['status']
                                 break
-                            before = len(items)
-                            for item in result['items']:
-                                if item['id'] in items:
-                                    self.coverage['duplicate_observations'] += 1
-                                if item['id'] in items or len(items) < MAX_ITEMS:
-                                    items[item['id']] = item
+                            if result.get('items'):
+                                for item in result['items']:
+                                    if item['id'] in items:
+                                        self.coverage['duplicate_observations'] += 1
+                                    if item['id'] in items or len(items) < MAX_ITEMS:
+                                        items[item['id']] = item
+                                    observed_ids.add(item['id'])
+                                # Do not normalize/re-absorb an unchanged snapshot.
+                                result = dict(result, items=[])
                             detail['new_ids'] = len(items) - page_before
                             self.coverage['unique_cards'] = len(items)
                             if len(items) >= MAX_ITEMS:
                                 reason = 'item_limit'
                                 break
-                            stalls = stalls + 1 if len(items) == before else 0
-                            if stalls >= 2 and at_bottom:
+                            if result.get('empty'):
+                                detail['scroll_stop_reason'] = 'empty'
                                 break
-                            if result.get('empty') or scroll_number == MAX_SCROLLS:
-                                detail['scroll_limit_reached'] = scroll_number == MAX_SCROLLS
+                            if scroll_number == MAX_SCROLLS:
+                                detail.update(scroll_stop_reason='scroll_limit', scroll_limit_reached=True)
+                                break
+                            if loop.time() >= scroll_deadline:
+                                detail['scroll_stop_reason'] = 'scroll_time_budget'
                                 break
                             stage = 'scroll'
-                            moved = await asyncio.wait_for(
-                                self.page.evaluate(SCROLL_RESULTS), SNAPSHOT_TIMEOUT_SECONDS)
+                            await asyncio.wait_for(self.page.evaluate(SCROLL_RESULTS),
+                                                   SNAPSHOT_TIMEOUT_SECONDS)
                             self.coverage['scrolls'] += 1
                             detail['scrolls'] += 1
                             await asyncio.sleep(SCROLL_WAIT_SECONDS)
+                            stage = 'classification_after_scroll'
+                            state = await self.inspect()
+                            if state != 'authorized':
+                                result = self.result(state, items=[])
+                                reason = state
+                                break
+                            stage = 'card_progress'
+                            progress = await asyncio.wait_for(self.page.evaluate(CARD_PROGRESS),
+                                                              SNAPSHOT_TIMEOUT_SECONDS)
+                            self.coverage['progress_probes'] += 1
+                            new_ids = set(progress['ids']) - observed_ids
+                            observed_ids.update(progress['ids'])
+                            log.info('browser progress page=%d new_ids=%d unchanged_attempts=%d',
+                                     page_number, len(new_ids), stalls + 1 if not new_ids else 0)
+                            if not new_ids:
+                                stalls += 1
+                                if stalls >= NO_NEW_ID_ATTEMPTS:
+                                    detail['scroll_stop_reason'] = 'no_new_ids'
+                                    break
+                                continue
+                            stalls = 0
                             stage = 'page_after_scroll'
                             result = await self._read_page(None)
-                            at_bottom = moved.get('bottom', not moved['moved'])
-                            if not moved['moved']:
-                                # Still inspect one settled snapshot at the bottom.
-                                stalls = max(stalls, 1)
+                        detail['elapsed_seconds'] = round(loop.time() - page_started, 3)
                         if result['status'] != 'authorized' or reason == 'item_limit':
                             break
                         if page_number > 1 and len(items) == page_before:
@@ -168,13 +226,20 @@ class Collector:
                             reason = 'unsafe_or_changed_pagination'
                             break
                         stage = 'page'
+                    # Also check after normal budget/limit stops; an error never saves a partial batch.
+                    if result is not None and result['status'] == 'authorized':
+                        stage = 'classification_final'
+                        state = await asyncio.wait_for(self.inspect(), FINAL_CHECK_RESERVE_SECONDS)
+                        if state != 'authorized':
+                            result = self.result(state, items=[])
+                            reason = state
             except (PlaywrightError, asyncio.TimeoutError, ValueError) as exc:
                 log.warning('browser collection error stage=%s error_type=%s', stage, type(exc).__name__)
                 reason = ('job_deadline' if isinstance(exc, asyncio.TimeoutError)
                           and asyncio.get_running_loop().time() - started >= JOB_TIMEOUT_SECONDS else 'error')
                 result = self.result('error', items=[], error='Сбор остановлен на ошибке или общем лимите времени. Старые объявления сохранены.')
             self.coverage.update(exhaustive=False, stop_reason=reason,
-                incomplete=(reason != 'no_next_link' or any(p.get('scroll_limit_reached') for p in self.coverage['pages_detail'])
+                incomplete=(reason != 'no_next_link' or any(p.get('scroll_stop_reason') in ('scroll_limit', 'scroll_time_budget') for p in self.coverage['pages_detail'])
                             or self.coverage['over_snapshot_limit_observations'] > 0),
                 elapsed_seconds=round(asyncio.get_running_loop().time() - started, 3))
             log.info('browser coverage pages=%d unique_cards=%d scrolls=%d stop_reason=%s',
@@ -222,6 +287,10 @@ class Collector:
                         ready = status == 'authorized' and (
                             await self.page.locator(CARD_SELECTOR).count() or await self.visible(EMPTY_SELECTOR))
                 except (PlaywrightError, asyncio.TimeoutError) as exc:
+                    runtime = self.runtime_status()
+                    if runtime['page_closed'] or runtime['page_crash'] or runtime['context_close'] or runtime['browser_connected'] is False:
+                        log.warning('browser unavailable stage=%s runtime=%s', stage, runtime)
+                        return self.result('error', items=[], error='Страница или процесс Chromium недоступны. Профиль не удалён; проверьте browser service.')
                     # Error messages can contain URLs/HTML. Log type/stage only.
                     log.info('browser DOM still loading stage=%s attempt=%d error_type=%s',
                              stage, attempts, type(exc).__name__)
@@ -301,6 +370,7 @@ async def lifespan(app):
             context.set_default_navigation_timeout(NAVIGATION_TIMEOUT_MS)
             collector = Collector(context)
             collector.page = context.pages[0] if context.pages else await context.new_page()
+            collector.watch_runtime()
             for extra in context.pages[1:]:
                 await extra.close()
 
@@ -330,11 +400,17 @@ app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None)
 @app.get('/healthz')
 async def health():
     collector = app.state.collector
+    runtime = collector.runtime_status()
+    if runtime['page_closed'] or runtime['page_crash'] or runtime['context_close'] or runtime['browser_connected'] is False:
+        log.warning('browser health unavailable runtime=%s', runtime)
+        raise HTTPException(503, 'Chromium page/context unavailable')
     try:
-        # Persistent contexts need not expose a separate Browser object.
-        await collector.page.evaluate('1')
-    except PlaywrightError as exc:
-        raise HTTPException(503, 'Chromium disconnected') from exc
+        # A failed ping does not prove Chromium disconnected (navigation can race).
+        await asyncio.wait_for(collector.page.evaluate('1'), HEALTH_TIMEOUT_SECONDS)
+    except (PlaywrightError, asyncio.TimeoutError) as exc:
+        log.warning('browser health probe failed error_type=%s runtime=%s',
+                    type(exc).__name__, collector.runtime_status())
+        raise HTTPException(503, 'Chromium health probe failed') from exc
     return {'status': 'ok'}
 
 
@@ -344,9 +420,11 @@ async def status():
     try:
         state = (collector.current if collector.lock.locked() else
                  'unknown' if collector.page.url == 'about:blank' else await collector.inspect())
-        return collector.result(state, running=collector.lock.locked(), manual_access=MANUAL)
+        return collector.result(state, running=collector.lock.locked(), manual_access=MANUAL,
+                                runtime=collector.runtime_status())
     except (PlaywrightError, asyncio.TimeoutError):
-        return collector.result('error', running=collector.lock.locked(), manual_access=MANUAL)
+        return collector.result('error', running=collector.lock.locked(), manual_access=MANUAL,
+                                runtime=collector.runtime_status())
 
 
 @app.post('/collect', dependencies=[Depends(auth)])

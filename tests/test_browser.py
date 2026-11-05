@@ -377,3 +377,61 @@ def test_short_scroll_timeout_is_not_reported_as_job_deadline(monkeypatch):
         assert not collector.lock.locked()
     monkeypatch.setattr(service, 'MANUAL', False)
     asyncio.run(scenario())
+
+
+def test_next_page_needs_time_for_navigation_and_final_check(monkeypatch):
+    import asyncio
+    from collector import service
+    from collector.page import PAGINATION_SNAPSHOT
+    calls = []
+    class Page:
+        url = 'https://cian.ru/cat.php?room1=1'
+        async def evaluate(self, expression):
+            assert expression == PAGINATION_SNAPSHOT
+            return dict(href=self.url+'&p=2', unsupported=False)
+    async def scenario():
+        collector = service.Collector(None); collector.page = Page()
+        async def read(url):
+            calls.append(url)
+            await asyncio.sleep(.12)
+            return dict(status='authorized', items=[{'id':'123'}], empty=False)
+        async def inspect(*_): return 'authorized'
+        collector._read_page = read; collector.inspect = inspect
+        result = await collector.collect(Page.url)
+        assert result['status'] == 'authorized' and [i['id'] for i in result['items']] == ['123']
+        assert result['coverage']['stop_reason'] == 'time_budget'
+        assert result['coverage']['incomplete'] is True
+        assert len(calls) == 1 and not collector.lock.locked()
+    monkeypatch.setattr(service,'JOB_TIMEOUT_SECONDS',.3)
+    monkeypatch.setattr(service,'MIN_PAGE_START_SECONDS',.2)
+    monkeypatch.setattr(service,'FINAL_CHECK_RESERVE_SECONDS',.02)
+    monkeypatch.setattr(service,'PAGE_SCROLL_SECONDS',0)
+    monkeypatch.setattr(service,'MANUAL',False)
+    asyncio.run(scenario())
+
+
+def test_health_error_does_not_claim_disconnect_and_is_bounded(monkeypatch, caplog):
+    import asyncio
+    from collector import service
+    from playwright.async_api import Error
+    class Page:
+        def is_closed(self): return False
+        async def evaluate(self, _):
+            raise Error('PRIVATE https://cian.ru/?token=SECRET <html>PRIVATE</html>')
+    collector=service.Collector(None);collector.page=Page()
+    service.app.state.collector=collector
+    client=TestClient(service.app)
+    response=client.get('/healthz')
+    assert response.status_code == 503
+    assert response.json()['detail'] == 'Chromium health probe failed'
+    assert collector.runtime_status()['browser_connected'] is None
+    class Slow(Page):
+        async def evaluate(self, _): await asyncio.sleep(30)
+    collector.page=Slow()
+    monkeypatch.setattr(service,'HEALTH_TIMEOUT_SECONDS',.02)
+    started=time.monotonic()
+    assert client.get('/healthz').status_code == 503
+    assert time.monotonic()-started < 1
+    collector.runtime_events['page_crash']=1
+    assert client.get('/healthz').json()['detail'] == 'Chromium page/context unavailable'
+    assert 'PRIVATE' not in caplog.text and 'SECRET' not in caplog.text
