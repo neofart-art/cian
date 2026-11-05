@@ -685,8 +685,9 @@ def duplicate_decision(listing_id: str, data: DuplicateDecision, user=Depends(au
 
 
 def run_collection(run_id, filters, kind='online'):
+    collector_source = CianBrowserSource() if kind == 'browser' else source.CianOnlineSource()
     try:
-        items = (CianBrowserSource() if kind == 'browser' else source.CianOnlineSource()).collect(filters)
+        items = collector_source.collect(filters)
         now = datetime.now(timezone.utc).isoformat()
         with database() as conn:
             conn.execute('BEGIN IMMEDIATE')
@@ -695,7 +696,8 @@ def run_collection(run_id, filters, kind='online'):
                          (now, 'Сбор завершён. Критерии пешей доступности и вторичного жилья следует сверить в объявлении.', len(items), run_id))
         if kind == 'browser':
             update_browser(status='authorized', message='Авторизован', last_success=now,
-                           new_count=result['added'], relisted_count=result['relisted'], last_error=None)
+                           new_count=result['added'], relisted_count=result['relisted'], last_error=None,
+                           coverage=getattr(collector_source, 'last_coverage', None))
         schedule_covers(item['id'] for item in items)
     except Exception as exc:
         message = str(exc) if isinstance(exc, source.SourceError) else 'Внутренняя ошибка сборщика; подробности в журнале сервера.'
@@ -709,6 +711,7 @@ def run_collection(run_id, filters, kind='online'):
         if kind == 'browser':
             status = exc.status if isinstance(exc, BrowserAttention) else 'error'
             update_browser(status=status, message=message,
+                           coverage=getattr(collector_source, 'last_coverage', None),
                            **({} if blocked else {'last_error': message}))
     finally:
         lock.release()

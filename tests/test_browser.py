@@ -318,3 +318,42 @@ def test_readiness_retry_stops_on_confirmation(monkeypatch, attention):
         assert not collector.lock.locked()
     monkeypatch.setattr(service, 'MANUAL', False)
     asyncio.run(scenario())
+
+
+def test_pagination_keeps_all_constraints():
+    from collector.page import next_search_url
+    original = 'https://www.cian.ru/cat.php?room1=1&custom=keep&p=1'
+    assert next_search_url(original, original.replace('p=1', 'p=2')).endswith('p=2')
+    for bad in (
+        'https://www.cian.ru/cat.php?room1=1&p=2',
+        'https://www.cian.ru/cat.php?room1=2&custom=keep&p=2',
+        'https://evil.test/cat.php?room1=1&custom=keep&p=2',
+        'https://www.cian.ru/sale/flat/123/?room1=1&custom=keep&p=2',
+        original,
+    ):
+        with pytest.raises(ValueError):
+            next_search_url(original, bad)
+
+
+def test_adapter_coverage_and_optional_fields(monkeypatch):
+    response = dict(status='authorized', coverage={'pages': 2, 'stop_reason': 'no_next_link'},
+        items=[{'id': '123', 'price': 11000000}, {'id': '456', 'price': 15000000}, {'id': '789'}])
+    instance = CianBrowserSource()
+    monkeypatch.setattr(instance, 'request', lambda *args, **kwargs: response)
+    assert [i['id'] for i in instance.collect({'max_price': 14500000, 'metro_minutes': 20})] == ['123', '789']
+    assert instance.last_coverage == dict(pages=2, stop_reason='no_next_link',
+        rejected_price=1, admitted_missing_price=1, admitted=2)
+
+
+def test_coverage_survives_browser_error_and_restart(browser_app, monkeypatch):
+    client, main = browser_app
+    coverage = {'pages': 2, 'unique_cards': 3, 'stop_reason': 'confirmation_required'}
+    def blocked(self, filters):
+        self.last_coverage = coverage
+        raise BrowserAttention('confirmation_required', ATTENTION)
+    monkeypatch.setattr(main.CianBrowserSource, 'collect', blocked)
+    assert client.post('/api/browser/collect', json={}).status_code == 202
+    state = finish(client, main)
+    assert state['browser']['coverage'] == coverage
+    importlib.reload(main)
+    assert main.browser_state()['coverage'] == coverage

@@ -1,7 +1,7 @@
 """Only rendered user-facing DOM. No embedded state, API, tokens or cookies."""
 import json
 import re
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from app.csv_source import listing_id, parse_card_text, travel_duration
 
@@ -137,3 +137,38 @@ EXTRACT_CARDS = r"""nodes => {
 # array before the callback runs, allowing React to detach all resolved nodes.
 CARD_SNAPSHOT = ('() => (' + EXTRACT_CARDS + ')([...document.querySelectorAll('
                  + json.dumps(CARD_SELECTOR) + ')])')
+
+
+def next_search_url(current, candidate):
+    """Follow only rendered pagination, without changing ANY search constraints."""
+    validate_url(candidate)
+    before, after = urlsplit(current), urlsplit(candidate)
+    if before.hostname != after.hostname or before.path != after.path:
+        raise ValueError('Pagination changed search context')
+    def constraints(parts):
+        query = parse_qs(parts.query, keep_blank_values=True, max_num_fields=200)
+        return {key: sorted(values) for key, values in query.items() if key not in ('p', 'page')}
+    if constraints(before) != constraints(after) or candidate == current:
+        raise ValueError('Pagination changed search constraints or did not advance')
+    return candidate
+
+
+PAGINATION_SNAPSHOT = r"""() => {
+  const visible = n => n.isConnected && !!(n.offsetWidth || n.offsetHeight || n.getClientRects().length)
+      && getComputedStyle(n).visibility !== 'hidden';
+  const nodes = [...document.querySelectorAll(
+      'a[rel="next"], [data-name="PaginationNext"], [aria-label], [data-name="Pagination"] a')];
+  const next = nodes.find(n => visible(n) && !n.matches('[disabled], [aria-disabled="true"]')
+      && (n.rel === 'next' || n.dataset.name === 'PaginationNext'
+          || /^(следующая( страница)?|далее|next( page)?)$/i.test(
+              (n.getAttribute('aria-label') || n.innerText || '').trim())));
+  const link = next && (next.matches('a[href]') ? next : next.querySelector('a[href]'));
+  return {href: link ? link.href : null, unsupported: !!next && !link};
+}"""
+
+SCROLL_RESULTS = r"""() => {
+  // Ordinary viewport scroll only. No hidden DOM/state/network inspection.
+  const before = scrollY;
+  window.scrollBy(0, Math.max(300, Math.round(innerHeight * .85)));
+  return {moved: scrollY !== before, bottom: scrollY + innerHeight >= document.documentElement.scrollHeight - 2};
+}"""

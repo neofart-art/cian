@@ -17,6 +17,7 @@ from collector.diagnostics import diagnose_current_page
 
 from collector.page import (ATTENTION, AUTH_SELECTOR, CARD_SELECTOR, CHALLENGE_SELECTOR,
                             LOGIN_SELECTOR, EMPTY_SELECTOR, VISIBLE_NODES, CARD_SNAPSHOT,
+                            PAGINATION_SNAPSHOT, SCROLL_RESULTS, next_search_url,
                             UNRECOGNIZED_CARDS, classify, normalize_card, validate_url)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
@@ -26,6 +27,12 @@ DOM_TIMEOUT_MS = 4500
 SNAPSHOT_TIMEOUT_SECONDS = 3
 NAVIGATION_TIMEOUT_MS = 20000
 DOM_WAIT_SECONDS = 8
+# Hard bounds keep the job inside the app's 110 s HTTP timeout.
+JOB_TIMEOUT_SECONDS = 90
+MAX_ITEMS = 100
+MAX_PAGES = 4
+MAX_SCROLLS = 24
+SCROLL_WAIT_SECONDS = .5
 READINESS_TIMEOUT = 'Выдача ЦИАН не успела загрузиться за отведённое время. Повторите поиск позже.'
 
 PROFILE = Path(os.getenv('BROWSER_PROFILE_DIR', '/profile'))
@@ -79,95 +86,203 @@ class Collector:
         if MANUAL or self.lock.locked():
             raise HTTPException(409, 'Browser busy or manual access enabled')
         async with self.lock:
-            stage = 'navigation'
+            self.coverage = dict(pages=0, scrolls=0, snapshots=0,
+                matching_node_observations=0, dom_skipped_observations=0,
+                normalized_observations=0, normalization_errors=0, over_snapshot_limit_observations=0,
+                duplicate_observations=0, unique_cards=0, pages_detail=[])
+            items = {}
+            started = asyncio.get_running_loop().time()
+            reason = 'error'
+            result = None
+            stage = 'page'
             try:
+                async with asyncio.timeout(JOB_TIMEOUT_SECONDS):
+                    visited = set()
+                    for page_number in range(1, MAX_PAGES + 1):
+                        if url in visited:
+                            reason = 'repeated_page'
+                            break
+                        visited.add(url)
+                        self.coverage['pages'] += 1
+                        page_before = len(items)
+                        detail = dict(number=page_number, scrolls=0, new_ids=0)
+                        self.coverage['pages_detail'].append(detail)
+                        result = await self._read_page(url)
+                        stalls = 0
+                        at_bottom = False
+                        for scroll_number in range(MAX_SCROLLS + 1):
+                            if result['status'] != 'authorized':
+                                reason = result['status']
+                                break
+                            before = len(items)
+                            for item in result['items']:
+                                if item['id'] in items:
+                                    self.coverage['duplicate_observations'] += 1
+                                if item['id'] in items or len(items) < MAX_ITEMS:
+                                    items[item['id']] = item
+                            detail['new_ids'] = len(items) - page_before
+                            self.coverage['unique_cards'] = len(items)
+                            if len(items) >= MAX_ITEMS:
+                                reason = 'item_limit'
+                                break
+                            stalls = stalls + 1 if len(items) == before else 0
+                            if stalls >= 2 and at_bottom:
+                                break
+                            if result.get('empty') or scroll_number == MAX_SCROLLS:
+                                detail['scroll_limit_reached'] = scroll_number == MAX_SCROLLS
+                                break
+                            stage = 'scroll'
+                            moved = await asyncio.wait_for(
+                                self.page.evaluate(SCROLL_RESULTS), SNAPSHOT_TIMEOUT_SECONDS)
+                            self.coverage['scrolls'] += 1
+                            detail['scrolls'] += 1
+                            await asyncio.sleep(SCROLL_WAIT_SECONDS)
+                            stage = 'page_after_scroll'
+                            result = await self._read_page(None)
+                            at_bottom = moved.get('bottom', not moved['moved'])
+                            if not moved['moved']:
+                                # Still inspect one settled snapshot at the bottom.
+                                stalls = max(stalls, 1)
+                        if result['status'] != 'authorized' or reason == 'item_limit':
+                            break
+                        if page_number > 1 and len(items) == page_before:
+                            reason = 'no_new_ids'
+                            break
+                        stage = 'pagination'
+                        pagination = await asyncio.wait_for(
+                            self.page.evaluate(PAGINATION_SNAPSHOT), SNAPSHOT_TIMEOUT_SECONDS)
+                        state = await self.inspect()
+                        if state != 'authorized':
+                            result = self.result(state, items=[])
+                            reason = state
+                            break
+                        if not pagination['href']:
+                            reason = 'unsupported_next_control' if pagination['unsupported'] else 'no_next_link'
+                            break
+                        if page_number == MAX_PAGES:
+                            reason = 'page_limit'
+                            break
+                        try:
+                            url = next_search_url(self.page.url, pagination['href'])
+                        except ValueError:
+                            reason = 'unsafe_or_changed_pagination'
+                            break
+                        stage = 'page'
+            except (PlaywrightError, asyncio.TimeoutError, ValueError) as exc:
+                log.warning('browser collection error stage=%s error_type=%s', stage, type(exc).__name__)
+                reason = 'job_deadline' if isinstance(exc, asyncio.TimeoutError) else 'error'
+                result = self.result('error', items=[], error='Сбор остановлен на ошибке или общем лимите времени. Старые объявления сохранены.')
+            self.coverage.update(exhaustive=False, stop_reason=reason,
+                incomplete=(reason != 'no_next_link' or any(p.get('scroll_limit_reached') for p in self.coverage['pages_detail'])
+                            or self.coverage['over_snapshot_limit_observations'] > 0),
+                elapsed_seconds=round(asyncio.get_running_loop().time() - started, 3))
+            log.info('browser coverage pages=%d unique_cards=%d scrolls=%d stop_reason=%s',
+                     self.coverage['pages'], len(items), self.coverage['scrolls'], reason)
+            # A challenge/error on ANY page discards the entire batch.
+            if result is None or result['status'] != 'authorized':
+                result = result or self.result('error', items=[], error=READINESS_TIMEOUT)
+                result['items'] = []
+                return dict(result, coverage=self.coverage)
+            return self.result('authorized', items=list(items.values()), coverage=self.coverage)
+
+    async def _read_page(self, url):
+        stage = 'navigation'
+        try:
+            status_code = 200
+            if url is not None:
                 response = await self.page.goto(
                     url, wait_until='domcontentloaded', timeout=NAVIGATION_TIMEOUT_MS)
                 status_code = response.status if response else 200
                 log.info('browser navigation completed http_status=%d', status_code)
-                if status_code in (401, 403, 429):
-                    return self.result('login_required' if status_code == 401 else 'confirmation_required', items=[])
-                if status_code >= 400:
-                    return self.result('error', items=[], error=f'ЦИАН вернул HTTP {status_code}')
-                # Retry only reads of this page, never navigation or confirmation.
-                # Each attempt shares the same hard deadline, including body.inner_text.
-                loop = asyncio.get_running_loop()
-                deadline = loop.time() + DOM_WAIT_SECONDS
-                attempts = 0
-                readiness_error = READINESS_TIMEOUT
+            if status_code in (401, 403, 429):
+                return self.result('login_required' if status_code == 401 else 'confirmation_required', items=[])
+            if status_code >= 400:
+                return self.result('error', items=[], error=f'ЦИАН вернул HTTP {status_code}')
+            # Retry only reads of this page, never navigation or confirmation.
+            # Each attempt shares the same hard deadline, including body.inner_text.
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + DOM_WAIT_SECONDS
+            attempts = 0
+            readiness_error = READINESS_TIMEOUT
+            stage = 'classification_loading'
+            while True:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    log.warning('browser readiness deadline exceeded stage=%s attempts=%d', stage, attempts)
+                    return self.result('error', items=[], error=readiness_error)
+                attempts += 1
                 stage = 'classification_loading'
-                while True:
-                    remaining = deadline - loop.time()
-                    if remaining <= 0:
-                        log.warning('browser readiness deadline exceeded stage=%s attempts=%d', stage, attempts)
-                        return self.result('error', items=[], error=readiness_error)
-                    attempts += 1
-                    stage = 'classification_loading'
-                    try:
-                        async with asyncio.timeout(remaining):
-                            status = await self.inspect(status_code)
-                            if status in ('confirmation_required', 'login_required'):
-                                return self.result(status, items=[])
-                            stage = 'waiting_for_cards'
-                            ready = status == 'authorized' and (
-                                await self.page.locator(CARD_SELECTOR).count() or await self.visible(EMPTY_SELECTOR))
-                    except (PlaywrightError, asyncio.TimeoutError) as exc:
-                        # Error messages can contain URLs/HTML. Log type/stage only.
-                        log.info('browser DOM still loading stage=%s attempt=%d error_type=%s',
-                                 stage, attempts, type(exc).__name__)
-                        readiness_error = READINESS_TIMEOUT
-                    else:
-                        if ready:
-                            break
-                        readiness_error = UNRECOGNIZED_CARDS if status == 'authorized' else READINESS_TIMEOUT
-                    remaining = deadline - loop.time()
-                    if remaining > 0:
-                        await asyncio.sleep(min(.25, remaining))
-                stage = 'classification_before_snapshot'
-                status = await self.inspect(status_code)
-                if status == 'unknown':
-                    return self.result('error', items=[], error='Не удалось подтвердить авторизацию по DOM. Проверьте меню профиля на OMV.')
-                if status != 'authorized':
-                    return self.result(status, items=[])
-
-                stage = 'card_snapshot'
-                snapshot = await asyncio.wait_for(
-                    self.page.evaluate(CARD_SNAPSHOT),
-                    timeout=SNAPSHOT_TIMEOUT_SECONDS)
-                log.info('browser snapshot matching_card_nodes=%d', snapshot['matching'])
-                items = {}
-                normalized = 0
-                skipped = snapshot['skipped']
-                stage = 'normalization'
-                for raw in snapshot['cards']:
-                    try:
-                        item = normalize_card(raw)
-                    except (SourceError, ValueError, TypeError, KeyError, AttributeError):
-                        skipped += 1
-                        continue
-                    normalized += 1
-                    items[item['id']] = item
-                log.info('browser snapshot normalized_cards=%d unique_cards=%d skipped_cards=%d',
-                         normalized, len(items), skipped)
-                # Challenges still discard the whole batch, including a late challenge.
-                stage = 'classification_after_snapshot'
-                status = await self.inspect(status_code)
-                if status != 'authorized':
-                    return self.result(status, items=[])
-                if not items and not (snapshot['empty'] and snapshot['visible'] == 0):
-                    log.warning('browser authorized listing DOM unrecognized')
-                    return self.result('error', items=[], error=UNRECOGNIZED_CARDS)
-                return self.result('authorized', items=list(items.values()))
-            except (PlaywrightError, asyncio.TimeoutError, ValueError, SourceError) as exc:
-                # Do not log exception messages/tracebacks: Playwright can include URLs/HTML.
-                log.warning('browser collection error stage=%s error_type=%s', stage, type(exc).__name__)
                 try:
-                    state = await self.inspect()
-                    if state in ('confirmation_required', 'login_required'):
-                        return self.result(state, items=[])
-                except (PlaywrightError, asyncio.TimeoutError):
-                    log.warning('browser collection error stage=classification_recovery')
-                return self.result('error', items=[], error=f'Не удалось прочитать выдачу ({type(exc).__name__}). Проверьте браузер вручную.')
+                    async with asyncio.timeout(remaining):
+                        status = await self.inspect(status_code)
+                        if status in ('confirmation_required', 'login_required'):
+                            return self.result(status, items=[])
+                        stage = 'waiting_for_cards'
+                        ready = status == 'authorized' and (
+                            await self.page.locator(CARD_SELECTOR).count() or await self.visible(EMPTY_SELECTOR))
+                except (PlaywrightError, asyncio.TimeoutError) as exc:
+                    # Error messages can contain URLs/HTML. Log type/stage only.
+                    log.info('browser DOM still loading stage=%s attempt=%d error_type=%s',
+                             stage, attempts, type(exc).__name__)
+                    readiness_error = READINESS_TIMEOUT
+                else:
+                    if ready:
+                        break
+                    readiness_error = UNRECOGNIZED_CARDS if status == 'authorized' else READINESS_TIMEOUT
+                remaining = deadline - loop.time()
+                if remaining > 0:
+                    await asyncio.sleep(min(.25, remaining))
+            stage = 'classification_before_snapshot'
+            status = await self.inspect(status_code)
+            if status == 'unknown':
+                return self.result('error', items=[], error='Не удалось подтвердить авторизацию по DOM. Проверьте меню профиля на OMV.')
+            if status != 'authorized':
+                return self.result(status, items=[])
+
+            stage = 'card_snapshot'
+            snapshot = await asyncio.wait_for(
+                self.page.evaluate(CARD_SNAPSHOT),
+                timeout=SNAPSHOT_TIMEOUT_SECONDS)
+            self.coverage['snapshots'] += 1
+            self.coverage['matching_node_observations'] += snapshot['matching']
+            self.coverage['over_snapshot_limit_observations'] += max(0, snapshot['matching'] - 100)
+            self.coverage['dom_skipped_observations'] += snapshot['skipped']
+            log.info('browser snapshot matching_card_nodes=%d', snapshot['matching'])
+            items = {}
+            normalized = 0
+            skipped = snapshot['skipped']
+            stage = 'normalization'
+            for raw in snapshot['cards']:
+                try:
+                    item = normalize_card(raw)
+                except (SourceError, ValueError, TypeError, KeyError, AttributeError):
+                    skipped += 1
+                    self.coverage['normalization_errors'] += 1
+                    continue
+                normalized += 1
+                self.coverage['normalized_observations'] += 1
+                items[item['id']] = item
+            log.info('browser snapshot normalized_cards=%d unique_cards=%d skipped_cards=%d',
+                     normalized, len(items), skipped)
+            # Challenges still discard the whole batch, including a late challenge.
+            stage = 'classification_after_snapshot'
+            status = await self.inspect(status_code)
+            if status != 'authorized':
+                return self.result(status, items=[])
+            if not items and not (snapshot['empty'] and snapshot['visible'] == 0):
+                log.warning('browser authorized listing DOM unrecognized')
+                return self.result('error', items=[], error=UNRECOGNIZED_CARDS)
+            return self.result('authorized', items=list(items.values()), empty=snapshot['empty'])
+        except (PlaywrightError, asyncio.TimeoutError, ValueError, SourceError) as exc:
+            # Do not log exception messages/tracebacks: Playwright can include URLs/HTML.
+            log.warning('browser collection error stage=%s error_type=%s', stage, type(exc).__name__)
+            try:
+                state = await self.inspect()
+                if state in ('confirmation_required', 'login_required'):
+                    return self.result(state, items=[])
+            except (PlaywrightError, asyncio.TimeoutError):
+                log.warning('browser collection error stage=classification_recovery')
+            return self.result('error', items=[], error=f'Не удалось прочитать выдачу ({type(exc).__name__}). Проверьте браузер вручную.')
 
 
 @asynccontextmanager

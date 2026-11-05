@@ -394,3 +394,102 @@ def test_targeted_diagnostic_current_dom_no_navigation_scroll_import_or_private_
             assert blocked['status']=='confirmation_required' and blocked['targets']==[]
             await context.close()
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('ending', ['end', 'repeat', 'captcha', 'http_error', 'changed_filter', 'unsupported'])
+def test_bounded_paginated_lazy_dom_collection(tmp_path, monkeypatch, ending):
+    """Real Chromium scrolling, delayed DOM inserts and rendered public pagination."""
+    async def scenario():
+        from urllib.parse import parse_qs, urlsplit
+        from playwright.async_api import async_playwright
+        from collector import service
+        from collector.service import Collector
+        monkeypatch.setattr(service, 'SCROLL_WAIT_SECONDS', .08)
+        navigations = []
+        def card(i):
+            return ('<article data-name="CardComponent"><a href="https://cian.ru/sale/flat/'+str(i)+'/">'
+                    '<span data-mark="OfferTitle">Квартира</span></a>'
+                    '<span data-mark="MainPrice">12 000 000 ₽</span></article>')
+        async def route(request):
+            q = parse_qs(urlsplit(request.request.url).query)
+            p = int(q.get('p', ['1'])[0])
+            navigations.append(p)
+            if p == 2 and ending == 'http_error':
+                await request.fulfill(status=500, content_type='text/html; charset=utf-8', body='Temporary failure')
+                return
+            if p == 2 and ending == 'captcha':
+                html = '<span data-name="UserAvatar">Профиль</span><p>Подтвердите, что вы человек</p>'
+            elif p == 1:
+                next_query = '?room1=2&p=2' if ending == 'changed_filter' else '?room1=1&p=2'
+                next_control = ('<button data-name="PaginationNext">Далее</button>' if ending == 'unsupported'
+                                else '<a rel="next" href="'+next_query+'">Следующая страница</a>')
+                html = ('<span data-name="UserAvatar">Профиль</span><main>'+card(123)+'</main>'
+                        '<div style="height:1800px">Spacer</div>'+next_control+
+                        '<script>let added=false;addEventListener("scroll",()=>{if(!added && scrollY>300){'
+                        'added=true;setTimeout(()=>document.querySelector("main").insertAdjacentHTML("beforeend",'
+                        +repr(card(456))+'),15);}});</script>')
+            else:
+                html = '<span data-name="UserAvatar">Профиль</span>'+card(123)+card(456)
+                if ending != 'repeat': html += card(789)
+                if ending == 'repeat': html += '<a rel="next" href="?room1=1&p=3">Следующая</a>'
+            await request.fulfill(status=200, content_type='text/html; charset=utf-8',
+                                  body='<!doctype html><meta charset="utf-8"><body>'+html+'</body>')
+        async with async_playwright() as playwright:
+            context = await playwright.chromium.launch_persistent_context(str(tmp_path/'profile'), headless=True)
+            await context.route('**/*', route)
+            collector = Collector(context); collector.page = context.pages[0]
+            result = await asyncio.wait_for(collector.collect(URL), timeout=8)
+            coverage = result['coverage']
+            assert coverage['scrolls'] > 0 and coverage['pages_detail'][0]['new_ids'] == 2
+            assert coverage['unique_cards'] >= 2
+            if ending in ('captcha', 'http_error'):
+                assert result['items'] == []
+                assert result['status'] == ('confirmation_required' if ending == 'captcha' else 'error')
+                assert navigations == [1, 2]
+            else:
+                assert result['status'] == 'authorized'
+                expected = ['123', '456', '789'] if ending == 'end' else ['123', '456']
+                assert [i['id'] for i in result['items']] == expected
+                assert coverage['stop_reason'] == dict(end='no_next_link', repeat='no_new_ids',
+                    changed_filter='unsafe_or_changed_pagination', unsupported='unsupported_next_control')[ending]
+                assert navigations == ([1] if ending in ('changed_filter', 'unsupported') else [1, 2])
+                assert coverage['duplicate_observations'] > 0
+            assert not collector.lock.locked()
+            await context.close()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('limit', ['pages', 'items', 'deadline'])
+def test_collection_hard_limits(tmp_path, monkeypatch, limit):
+    async def scenario():
+        from urllib.parse import parse_qs, urlsplit
+        from playwright.async_api import async_playwright
+        from collector import service
+        monkeypatch.setattr(service, 'SCROLL_WAIT_SECONDS', .01)
+        monkeypatch.setattr(service, 'MAX_PAGES', 2)
+        monkeypatch.setattr(service, 'MAX_ITEMS', 3 if limit == 'items' else 100)
+        if limit == 'deadline':
+            monkeypatch.setattr(service, 'JOB_TIMEOUT_SECONDS', .2)
+        visits = []
+        async def route(request):
+            p = int(parse_qs(urlsplit(request.request.url).query).get('p', ['1'])[0])
+            visits.append(p)
+            html = ('<span data-name="UserAvatar">Профиль</span>'
+                    '<article data-name="CardComponent"><a href="https://cian.ru/sale/flat/'+str(100+p)+'/">Квартира</a></article>'
+                    '<a rel="next" href="?room1=1&p='+str(p+1)+'">Следующая</a>')
+            if limit == 'deadline': await asyncio.sleep(.5)
+            await request.fulfill(status=200, content_type='text/html; charset=utf-8', body=html)
+        async with async_playwright() as playwright:
+            context = await playwright.chromium.launch_persistent_context(str(tmp_path/'profile'),headless=True)
+            await context.route('**/*', route)
+            collector = service.Collector(context); collector.page = context.pages[0]
+            if limit == 'items': monkeypatch.setattr(service, 'MAX_ITEMS', 1)
+            result = await asyncio.wait_for(collector.collect(URL), timeout=4)
+            assert result['coverage']['stop_reason'] == dict(pages='page_limit', items='item_limit', deadline='job_deadline')[limit]
+            assert result['coverage']['exhaustive'] is False
+            assert len(visits) <= 2
+            if limit == 'deadline': assert result['items'] == [] and result['status'] == 'error'
+            else: assert result['status'] == 'authorized'
+            assert not collector.lock.locked()
+            await context.close()
+    asyncio.run(scenario())

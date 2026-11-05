@@ -16,6 +16,8 @@ class BrowserAttention(SourceBlocked):
 class CianBrowserSource:
     name = 'ЦИАН browser'
 
+    last_coverage = None
+
     def request(self, method, path, **kwargs):
         token = os.getenv('BROWSER_API_TOKEN') or os.getenv('APP_PASSWORD', '')
         try:
@@ -36,9 +38,16 @@ class CianBrowserSource:
         result = self.request('POST', '/collect', json={
             'url': os.getenv('CIAN_SEARCH_URL') or search_url(filters),
         })
+        self.last_coverage = result.get('coverage')
         if result.get('status') in ('login_required', 'confirmation_required'):
             raise BrowserAttention(result['status'], result['message'])
         if result.get('status') != 'authorized' or not isinstance(result.get('items'), list):
             raise SourceError(result.get('error') or result.get('message') or 'Не удалось подтвердить обычную выдачу ЦИАН.')
-        return [dict(item, source=self.name) for item in result['items']
-                if item.get('price') is None or item['price'] <= filters['max_price']]
+        admitted = [dict(item, source=self.name) for item in result['items']
+                    if item.get('price') is None or item['price'] <= filters['max_price']]
+        if self.last_coverage is not None:
+            self.last_coverage = dict(self.last_coverage,
+                rejected_price=len(result['items']) - len(admitted),
+                admitted_missing_price=sum(item.get('price') is None for item in admitted),
+                admitted=len(admitted))
+        return admitted
