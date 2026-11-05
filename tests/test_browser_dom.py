@@ -344,3 +344,53 @@ def test_only_first_visible_cover_is_extracted_without_gallery(tmp_path):
             assert not any('gallery' in name or 'photos' in name for name in item)
             await context.close()
     asyncio.run(scenario())
+
+
+
+def test_targeted_diagnostic_current_dom_no_navigation_scroll_import_or_private_text(tmp_path):
+    async def scenario():
+        import json
+        from playwright.async_api import async_playwright
+        from collector.service import Collector
+        from collector.diagnostics import diagnose_current_page
+        from fastapi import HTTPException
+        async with async_playwright() as playwright:
+            context=await playwright.chromium.launch_persistent_context(str(tmp_path/'profile'),headless=True)
+            requests=[]
+            async def route(request):
+                requests.append(request.request.url)
+                await request.fulfill(status=200,content_type='text/html',body=HTML)
+            await context.route('**/*',route)
+            page=context.pages[0]
+            await page.goto(URL+'&token=DO_NOT_LEAK_QUERY')
+            extra='<p>DO_NOT_LEAK_BODY</p><a href="https://cian.ru/sale/flat/456/">Unknown card layout</a>'
+            extra+=''.join('<article data-name="CardComponent"><a href="https://cian.ru/sale/flat/'+str(1000+i)+'/">offer</a></article>' for i in range(101))
+            await page.evaluate('(html)=>document.body.insertAdjacentHTML("beforeend",html)',extra)
+            collector=Collector(context);collector.page=page
+            before=await page.evaluate('scrollY');count=len(requests)
+            report=await diagnose_current_page(collector,['123','456','1100','9999','1000'],10000000)
+            assert report['status']=='authorized'
+            a,b,c,d,e=report['targets']
+            assert a['normalization']=='normalized' and a['price_filter']=='rejected_price'
+            assert b['normalization']=='visible_link_without_card_selector'
+            assert c['normalization']=='outside_100_card_limit'
+            assert d['normalization']=='not_observed_in_current_dom'
+            assert e['price_filter']=='admitted_missing_price' and 'price' in e['missing_fields']
+            assert len(requests)==count and await page.evaluate('scrollY')==before
+            rendered=json.dumps(report)
+            assert 'DO_NOT_LEAK_QUERY' not in rendered and 'DO_NOT_LEAK_BODY' not in rendered
+            await collector.lock.acquire()
+            with pytest.raises(HTTPException) as error:await diagnose_current_page(collector,['123'])
+            assert error.value.status_code==409
+            collector.lock.release()
+            original=collector.inspect;calls=0
+            async def late(http_status=200):
+                nonlocal calls
+                calls+=1
+                if calls==2:await page.evaluate("document.body.insertAdjacentHTML('beforeend','<p>Подтвердите, что вы человек</p>')")
+                return await original(http_status)
+            collector.inspect=late
+            blocked=await diagnose_current_page(collector,['123'])
+            assert blocked['status']=='confirmation_required' and blocked['targets']==[]
+            await context.close()
+    asyncio.run(scenario())

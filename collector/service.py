@@ -6,12 +6,14 @@ import os
 import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from playwright.async_api import async_playwright, Error as PlaywrightError
 
 from app.source_types import SourceError
+from collector.diagnostics import diagnose_current_page
 
 from collector.page import (ATTENTION, AUTH_SELECTOR, CARD_SELECTOR, CHALLENGE_SELECTOR,
                             LOGIN_SELECTOR, EMPTY_SELECTOR, VISIBLE_NODES, CARD_SNAPSHOT,
@@ -238,3 +240,15 @@ async def collect(search: Search):
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     return await app.state.collector.collect(search.url)
+
+
+class DiagnosticIDs(BaseModel):
+    model_config=ConfigDict(extra='forbid')
+    ids:list[Annotated[str,Field(pattern=r'^[0-9]{1,32}$',strict=True)]]=Field(min_length=1,max_length=20)
+    max_price:int|None=Field(default=None,ge=100000,le=1000000000)
+
+
+@app.post('/diagnostics/dom',dependencies=[Depends(auth)])
+async def diagnostic_dom(request:DiagnosticIDs):
+    return await diagnose_current_page(app.state.collector,
+        list(dict.fromkeys(str(int(value)) for value in request.ids)),request.max_price)
