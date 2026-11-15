@@ -46,7 +46,8 @@ class Admission:
                     or any(not isinstance(v, str) or not v.isascii() or not v.isdigit() for v in bound)
                     or set(bound) != set(ids)
                     or any(not isinstance(v, str) or not v.strip() for v in names)
-                    or len({normalized(v) for v in names}) != len(set(ids))):
+                    or not names
+                    or len({normalized(v) for v in names}) != len(names)):
                     raise ValueError()
             self.allowed_names = {normalized(v) for v in policy.get('names', [])}
         except (TypeError, ValueError):

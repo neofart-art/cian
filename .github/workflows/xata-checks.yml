@@ -11,7 +11,8 @@ concurrency:
   cancel-in-progress: true
 jobs:
   tests:
-    runs-on: ubuntu-latest
+    # Playwright 1.58 supports Noble, not the new ubuntu-latest 26.04 image.
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
       APP_USER: ci

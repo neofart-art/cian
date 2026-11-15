@@ -1,4 +1,6 @@
 import json
+from pathlib import Path
+from urllib.parse import urlencode
 
 import pytest
 
@@ -76,6 +78,20 @@ def test_selected_names_only_and_exact_normalization():
     p = Admission(URL, FILTERS, NAMES)
     assert p.reasons(card()) == []
     assert 'district' in p.reasons(card(address='Москва, р-н Капотня, улица Примерная'))
+
+
+def test_policy_from_user_screenshots_expands_whole_okrugs():
+    raw = (Path(__file__).parents[1] / 'config/cian_district_policy_20261115.json').read_text()
+    data = json.loads(raw)
+    url = 'https://www.cian.ru/cat.php?' + urlencode(
+        [(f'district[{i}]', v) for i, v in enumerate(data['ids'])])
+    p = Admission(url, FILTERS, raw)
+    assert len(data['ids']) == 53 and len(p.allowed_names) == 113
+    for name in data['names']:
+        assert p.reasons(card(address=f'Москва, р-н {name}, улица Примерная')) == []
+    for name in ('Капотня', 'Люблино', 'Марьино', 'Некрасовка', 'Северный',
+                 'Северное Бутово', 'Южное Бутово', 'Восточный', 'Гольяново', 'Косино-Ухтомский'):
+        assert 'district' in p.reasons(card(address=f'Москва, р-н {name}, улица Примерная'))
 
 
 @pytest.mark.parametrize('mapping', ['[]', '{', '{"777": 3}', '{"777": ""}'])
