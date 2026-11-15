@@ -426,7 +426,7 @@ def test_health_error_does_not_claim_disconnect_and_is_bounded(monkeypatch, capl
     client=TestClient(service.app)
     response=client.get('/healthz')
     assert response.status_code == 503
-    assert response.json()['detail'] == 'Chromium health probe failed'
+    assert response.json()['detail'] == 'Browser health probe failed'
     assert collector.runtime_status()['browser_connected'] is None
     class Slow(Page):
         async def evaluate(self, _): await asyncio.sleep(30)
@@ -437,7 +437,7 @@ def test_health_error_does_not_claim_disconnect_and_is_bounded(monkeypatch, capl
     assert time.monotonic()-started < 1
     collector.runtime_events['page_crash']=1
     collector.page_crashed=True
-    assert client.get('/healthz').json()['detail'] == 'Chromium page/context unavailable'
+    assert client.get('/healthz').json()['detail'] == 'Browser page/context unavailable'
     assert 'PRIVATE' not in caplog.text and 'SECRET' not in caplog.text
 
 

@@ -8,12 +8,14 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
 from pydantic import BaseModel, Field, ConfigDict
 from playwright.async_api import async_playwright, Error as PlaywrightError
 
 from app.source_types import SourceError
 from collector.diagnostics import diagnose_current_page
+from collector.browser_runtime import browser_engine, launch_context
+from collector.result_preview import SCOPED_SNAPSHOT, preview_results, same_search
 
 from collector.page import (ATTENTION, AUTH_SELECTOR, CARD_SELECTOR, CHALLENGE_SELECTOR,
                             LOGIN_SELECTOR, EMPTY_SELECTOR, VISIBLE_NODES, CARD_SNAPSHOT,
@@ -30,7 +32,9 @@ DOM_WAIT_SECONDS = 8
 # Hard bounds keep the job inside the app's 110 s HTTP timeout.
 JOB_TIMEOUT_SECONDS = 90
 MAX_ITEMS = 100
-MAX_PAGES = 4
+MAX_PAGES = int(os.getenv('BROWSER_MAX_PAGES', '4'))
+if not 1 <= MAX_PAGES <= 4:
+    raise ValueError('BROWSER_MAX_PAGES must be between 1 and 4')
 MAX_SCROLLS = 6
 NO_NEW_ID_ATTEMPTS = 2
 PAGE_SCROLL_SECONDS = 6
@@ -43,6 +47,8 @@ READINESS_TIMEOUT = 'Выдача ЦИАН не успела загрузить�
 
 PROFILE = Path(os.getenv('BROWSER_PROFILE_DIR', '/profile'))
 MANUAL = os.getenv('BROWSER_MANUAL_ACCESS', '0') == '1'
+REVIEW_ONLY = os.getenv('BROWSER_REVIEW_ONLY', '0') == '1'
+RESULTS_SELECTOR = os.getenv('BROWSER_RESULTS_SELECTOR', '').strip()
 
 
 def auth(authorization: str = Header(default='')):
@@ -113,7 +119,7 @@ class Collector:
 
     async def collect(self, url):
         validate_url(url)
-        if MANUAL or self.lock.locked():
+        if MANUAL or REVIEW_ONLY or self.lock.locked():
             raise HTTPException(409, 'Browser busy or manual access enabled')
         async with self.lock:
             self.coverage = dict(pages=0, scrolls=0, snapshots=0, progress_probes=0,
@@ -260,6 +266,7 @@ class Collector:
         try:
             status_code = 200
             if url is not None:
+                self.expected_page_url = url
                 response = await self.page.goto(
                     url, wait_until='domcontentloaded', timeout=NAVIGATION_TIMEOUT_MS)
                 status_code = response.status if response else 200
@@ -314,9 +321,16 @@ class Collector:
                 return self.result(status, items=[])
 
             stage = 'card_snapshot'
-            snapshot = await asyncio.wait_for(
-                self.page.evaluate(CARD_SNAPSHOT),
-                timeout=SNAPSHOT_TIMEOUT_SECONDS)
+            if os.getenv('BROWSER_REQUIRE_RESULT_SCOPE', '0') == '1':
+                if not same_search(self.page.url, getattr(self, 'expected_page_url', '')):
+                    return self.result('error', items=[], error='Условия открытой выдачи изменились. Импорт остановлен.')
+                snapshot = await asyncio.wait_for(self.page.evaluate(SCOPED_SNAPSHOT, RESULTS_SELECTOR),
+                                                  timeout=SNAPSHOT_TIMEOUT_SECONDS)
+                if not snapshot.get('scope_confirmed'):
+                    return self.result('error', items=[], error='Не подтверждён контейнер основной выдачи. Импорт остановлен.')
+            else:
+                snapshot = await asyncio.wait_for(self.page.evaluate(CARD_SNAPSHOT),
+                                                  timeout=SNAPSHOT_TIMEOUT_SECONDS)
             self.coverage['snapshots'] += 1
             self.coverage['matching_node_observations'] += snapshot['matching']
             self.coverage['over_snapshot_limit_observations'] += max(0, snapshot['matching'] - 100)
@@ -366,10 +380,7 @@ async def lifespan(app):
     fcntl.flock(profile_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     try:
         async with async_playwright() as playwright:
-            context = await playwright.chromium.launch_persistent_context(
-                str(PROFILE / 'chromium'), headless=False, viewport={'width': 1280, 'height': 900},
-                # Ordinary Playwright defaults; no stealth, UA or fingerprint overrides.
-            )
+            context = await launch_context(playwright, PROFILE)
             context.set_default_timeout(DOM_TIMEOUT_MS)
             context.set_default_navigation_timeout(NAVIGATION_TIMEOUT_MS)
             collector = Collector(context)
@@ -387,7 +398,10 @@ async def lifespan(app):
                         return
                 await route.continue_()
 
-            await context.route('**/*', restrict_navigation)
+            # Human-operated pilot: ordinary browser caching/navigation, no interception.
+            # Programmatic opening below validates the configured Cian search URL.
+            if not MANUAL:
+                await context.route('**/*', restrict_navigation)
             app.state.collector = collector
             # No automatic external navigation at startup, including after CAPTCHA.
             try:
@@ -407,14 +421,14 @@ async def health():
     runtime = collector.runtime_status()
     if runtime['page_closed'] or runtime['page_crashed'] or runtime['context_close'] or runtime['browser_connected'] is False:
         log.warning('browser health unavailable runtime=%s', runtime)
-        raise HTTPException(503, 'Chromium page/context unavailable')
+        raise HTTPException(503, 'Browser page/context unavailable')
     try:
         # A failed ping does not prove Chromium disconnected (navigation can race).
         await asyncio.wait_for(collector.page.evaluate('1'), HEALTH_TIMEOUT_SECONDS)
     except (PlaywrightError, asyncio.TimeoutError) as exc:
         log.warning('browser health probe failed error_type=%s runtime=%s',
                     type(exc).__name__, collector.runtime_status())
-        raise HTTPException(503, 'Chromium health probe failed') from exc
+        raise HTTPException(503, 'Browser health probe failed') from exc
     return {'status': 'ok'}
 
 
@@ -424,8 +438,10 @@ async def status():
     try:
         state = (collector.current if collector.lock.locked() else
                  'unknown' if collector.page.url == 'about:blank' else await collector.inspect())
+        browser = getattr(collector.context, 'browser', None)
         return collector.result(state, running=collector.lock.locked(), manual_access=MANUAL,
-                                runtime=collector.runtime_status())
+                                runtime=collector.runtime_status(), engine=browser_engine(), review_only=REVIEW_ONLY,
+                                browser_version=browser.version if browser is not None else None)
     except (PlaywrightError, asyncio.TimeoutError):
         return collector.result('error', running=collector.lock.locked(), manual_access=MANUAL,
                                 runtime=collector.runtime_status())
@@ -450,3 +466,45 @@ class DiagnosticIDs(BaseModel):
 async def diagnostic_dom(request:DiagnosticIDs):
     return await diagnose_current_page(app.state.collector,
         list(dict.fromkeys(str(int(value)) for value in request.ids)),request.max_price)
+
+
+@app.get('/preview/results', dependencies=[Depends(auth)])
+async def results_preview(selector: str = Query(default='', max_length=200)):
+    return await preview_results(app.state.collector, selector or RESULTS_SELECTOR,
+                                 os.getenv('CIAN_SEARCH_URL', ''))
+
+
+@app.get('/preview/screenshot', dependencies=[Depends(auth)])
+async def screenshot_preview():
+    collector = app.state.collector
+    if collector.lock.locked():
+        raise HTTPException(409, 'Browser busy')
+    async with collector.lock:
+        try:
+            png = await collector.page.screenshot(full_page=False, timeout=5000)
+        except PlaywrightError:
+            raise HTTPException(503, 'Screenshot unavailable') from None
+    return Response(content=png, media_type='image/png', headers={'Cache-Control':'no-store'})
+
+
+@app.post('/preview/open-search', dependencies=[Depends(auth)])
+async def open_search_preview():
+    if not REVIEW_ONLY:
+        raise HTTPException(409, 'Only available in isolated review-only pilot')
+    collector = app.state.collector
+    if collector.lock.locked():
+        raise HTTPException(409, 'Browser busy')
+    url = os.getenv('CIAN_SEARCH_URL', '')
+    try:
+        validate_url(url)
+        from urllib.parse import urlsplit
+        if urlsplit(url).path.rstrip('/') != '/cat.php':
+            raise ValueError()
+    except ValueError:
+        raise HTTPException(422, 'Configured Cian search URL required') from None
+    async with collector.lock:
+        try:
+            await collector.page.goto(url, wait_until='domcontentloaded', timeout=NAVIGATION_TIMEOUT_MS)
+        except PlaywrightError:
+            raise HTTPException(503, 'Could not open search; inspect browser manually') from None
+    return {'mode':'preview_no_import', 'opened':True}
