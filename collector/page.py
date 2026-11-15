@@ -45,6 +45,33 @@ def classify(url, text, *, challenge=False, login=False, authorized=False, http_
     return 'authorized' if authorized else 'unknown'
 
 
+def header_travel_duration(text, metro):
+    """Read an explicit duration adjacent to the station, before the description.
+
+    Cian can render a station and its travel time without a TimeLabel element.
+    Free-form seller prose must never supply this structured search field.
+    """
+    def station(value):
+        value = re.sub(r'\s+', ' ', value).strip().casefold().replace('ё', 'е')
+        return re.sub(r'^(?:метро\s*[:—-]?\s*|м\.\s*)', '', value)
+
+    if not metro:
+        return None
+    lines = []
+    for line in text.splitlines():
+        line = re.sub(r'\s+', ' ', line).strip()
+        if re.match(r'^(?:от\s+)?\d[\d\s]*\s*(?:₽|руб)', line, re.I) or re.match(r'^Описание(?:\s*[:：]|\s*$)', line, re.I):
+            break
+        if line:
+            lines.append(line)
+    for index, line in enumerate(lines[:-1]):
+        if station(line) == station(metro):
+            duration = travel_duration(lines[index + 1])
+            if duration:
+                return duration
+    return None
+
+
 def normalize_card(card):
     """Best effort optional fields, preserve visible card text for verification."""
     url = card.get('url', '')
@@ -64,7 +91,11 @@ def normalize_card(card):
     for field in ('address', 'complex_name', 'metro'):
         if card.get(field):
             item[field] = card[field][:10000]
-    duration = travel_duration(card.get('metro_time'))
+    # parse_card_text also parses prose for CSV imports. Browser search times
+    # must instead come from the displayed station block, never that prose.
+    item.pop('metro_time', None)
+    item.pop('metro_walk_minutes', None)
+    duration = travel_duration(card.get('metro_time')) or header_travel_duration(text, item.get('metro'))
     if duration:
         item.update(duration)
     image = card.get('cover_image_url')
@@ -91,12 +122,12 @@ EXTRACT_CARD = r"""el => {
   const recommended = (() => {
     // Only public section labels/containers; no embedded state or network APIs.
     for (let node = el.parentElement; node && node !== document.body; node = node.parentElement) {
-      if (/recommend|similar|relatedoffers/i.test(node.getAttribute('data-name') || '')) return true;
+      if (/recommend|similar|relatedoffers|suggestionslayout/i.test(node.getAttribute('data-name') || '')) return true;
     }
     const root = el.closest('main') || document.body;
     return [...root.querySelectorAll('h2,h3,[role="heading"]')].some(node =>
       visible(node) && !(el.contains(node)) &&
-      /^(похожие (?:объявления|предложения|квартиры)|рекомендуем(?: также)?|посмотрите также|вам (?:может|могут) понравиться|объявления (?:в|из) соседних районов|предложения по похожим параметрам)[.!:]?$/i.test(node.innerText.trim()) &&
+      /^(похожие (?:объявления|предложения|квартиры)|дополнительные предложения по вашему запросу|рекомендуем(?: также)?|посмотрите также|вам (?:может|могут) понравиться|объявления (?:в|из) соседних районов|предложения по похожим параметрам)[.!:]?$/i.test(node.innerText.trim()) &&
       !!(node.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING));
   })();
   return {

@@ -60,11 +60,11 @@ jobs:
           node --test tests/review_state.test.cjs tests/listing_diagnostics.test.cjs
       - name: Install test Chromium and WebKit
         timeout-minutes: 5
-        run: python -m playwright install --with-deps chromium webkit
+        run: python -m playwright install --with-deps chromium webkit firefox
       - name: Offline DOM and persistent-profile tests
         env:
           UI_SCREENSHOT_DIR: artifacts/ui-screenshots
-        run: RUN_BROWSER_TESTS=1 python -m pytest -v --tb=short --timeout=180 --maxfail=3 tests/test_browser_dom.py tests/test_browser_admission_dom.py tests/test_ui.py tests/test_comments_ui.py tests/test_feed_ui.py
+        run: RUN_BROWSER_TESTS=1 python -m pytest -v --tb=short --timeout=180 --maxfail=3 tests/test_browser_dom.py tests/test_browser_admission_dom.py tests/test_firefox_preview_dom.py tests/test_ui.py tests/test_comments_ui.py tests/test_feed_ui.py
       - name: Prepare readable screenshot preview
         if: always()
         run: python tests/screenshot_contact.py
@@ -113,3 +113,38 @@ jobs:
         run: |
           docker rm -f xata-browser-smoke || true
           docker volume rm xata-browser-smoke-profile || true
+  firefox-pilot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install isolated Firefox pilot dependencies
+        run: python -m pip install -r requirements-app.txt -r requirements-firefox.txt pytest==8.3.5
+      - name: Install pilot browsers
+        run: python -m playwright install --with-deps chromium firefox
+      - name: Test read-only preview and exact result scope on both engines
+        run: RUN_BROWSER_TESTS=1 python -m pytest -q tests/test_firefox_preview.py tests/test_firefox_preview_dom.py
+      - name: Build isolated Firefox image
+        run: docker build -f Dockerfile.firefox -t xata-firefox-ci .
+      - name: Headed Firefox and no-import noVNC smoke test
+        run: |
+          docker run --rm -v xata-firefox-ci-profile:/profile --entrypoint x11vnc xata-firefox-ci -storepasswd testpass /profile/vnc.pass
+          docker run -d --name xata-firefox-ci --init --read-only --cap-drop ALL --security-opt no-new-privileges:true --memory 2g --cpus 2 --pids-limit 512 --shm-size 512m --tmpfs /tmp:size=256m,mode=1777 --tmpfs /home/browser:size=16m,uid=10001,gid=10001,mode=700 -e HOME=/home/browser -e BROWSER_ENGINE=firefox -e BROWSER_MANUAL_ACCESS=1 -e BROWSER_REVIEW_ONLY=1 -e BROWSER_API_TOKEN=ci-test-password-16 -v xata-firefox-ci-profile:/profile xata-firefox-ci
+          for attempt in $(seq 1 60); do
+            if docker exec xata-firefox-ci python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/healthz',timeout=3)" >/dev/null 2>&1; then
+              docker exec xata-firefox-ci python -c "import json,urllib.request; r=urllib.request.Request('http://127.0.0.1:8010/status',headers={'Authorization':'Bearer ci-test-password-16'}); s=json.load(urllib.request.urlopen(r)); assert s['engine']=='firefox' and s['review_only'] and s['manual_access']"
+              docker exec xata-firefox-ci python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:6080/vnc.html',timeout=3)"
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs xata-firefox-ci
+          exit 1
+      - name: Clean up Firefox pilot
+        if: always()
+        run: |
+          docker rm -f xata-firefox-ci || true
+          docker volume rm xata-firefox-ci-profile || true
