@@ -70,6 +70,8 @@ def normalize_card(card):
     image = card.get('cover_image_url')
     if isinstance(image,str) and len(image) <= 4096:
         item['cover_image_url'] = image
+    if card.get('search_section') == 'recommendation':
+        item['search_section'] = 'recommendation'
     return item
 
 
@@ -86,7 +88,19 @@ EXTRACT_CARD = r"""el => {
   // slides, embedded state or additional gallery images.
   const photo = [...el.querySelectorAll('a[href*="/sale/flat/"] img, [data-name="Gallery"] img, [data-name="OfferImage"] img')]
     .find(node => visible(node) && !node.closest('[data-name="Avatar"], [data-name="SellerInfo"]'));
+  const recommended = (() => {
+    // Only public section labels/containers; no embedded state or network APIs.
+    for (let node = el.parentElement; node && node !== document.body; node = node.parentElement) {
+      if (/recommend|similar|relatedoffers/i.test(node.getAttribute('data-name') || '')) return true;
+    }
+    const root = el.closest('main') || document.body;
+    return [...root.querySelectorAll('h2,h3,[role="heading"]')].some(node =>
+      visible(node) && !(el.contains(node)) &&
+      /^(похожие (?:объявления|предложения|квартиры)|рекомендуем(?: также)?|посмотрите также|вам (?:может|могут) понравиться|объявления (?:в|из) соседних районов|предложения по похожим параметрам)[.!:]?$/i.test(node.innerText.trim()) &&
+      !!(node.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING));
+  })();
   return {
+    search_section: recommended ? 'recommendation' : 'unverified',
     cover_image_url: photo ? (photo.currentSrc || photo.src || '') : '',
     url: link ? link.href : '',
     title: text('[data-mark="OfferTitle"], [data-mark="OfferSubtitle"], [data-name="Title"]'),
@@ -120,7 +134,12 @@ EXTRACT_CARDS = r"""nodes => {
         continue;
       }
       visibleCount += 1;
-      cards.push(extract(node));
+      const card = extract(node);
+      if (card.search_section === 'recommendation') {
+        skipped += 1;
+        continue;
+      }
+      cards.push(card);
     } catch (_) {
       // A malformed/detached card must not discard the other cards.
       skipped += 1;

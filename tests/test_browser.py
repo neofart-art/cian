@@ -336,13 +336,16 @@ def test_pagination_keeps_all_constraints():
 
 
 def test_adapter_coverage_and_optional_fields(monkeypatch):
+    monkeypatch.setenv('CIAN_SEARCH_URL', 'https://www.cian.ru/cat.php')
     response = dict(status='authorized', coverage={'pages': 2, 'stop_reason': 'no_next_link'},
         items=[{'id': '123', 'price': 11000000}, {'id': '456', 'price': 15000000}, {'id': '789'}])
     instance = CianBrowserSource()
     monkeypatch.setattr(instance, 'request', lambda *args, **kwargs: response)
-    assert [i['id'] for i in instance.collect({'max_price': 14500000, 'metro_minutes': 20})] == ['123', '789']
+    assert [i['id'] for i in instance.collect({'max_price': 14500000, 'metro_minutes': 20})] == ['123']
     assert instance.last_coverage == dict(pages=2, stop_reason='no_next_link',
-        rejected_price=1, admitted_missing_price=1, admitted=2)
+        admission=dict(received=3, admitted=1, rejected=2,
+                       reasons={'price': 1, 'price_unknown': 1}, missing_district_names=0,
+                       not_independently_verified=[]))
 
 
 def test_coverage_survives_browser_error_and_restart(browser_app, monkeypatch):
