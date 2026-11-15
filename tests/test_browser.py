@@ -44,6 +44,43 @@ def test_visible_text_classification_and_card():
     assert item['description'] == 'Светлая квартира'
 
 
+@pytest.mark.parametrize('station,header,prose,expected', [
+    ('Новопеределкино', '10 минут пешком', 'В пешей доступности от метро.', 10),
+    ('Домодедовская', '9 минут пешком', 'Метро в 78 минутах пешком.', 9),
+    ('Долгопрудная', '7 минут пешком', '5 минут пешком до станции МЦД.', 7),
+    ('Домодедовская', '9 мин.', 'Метро в 78 минутах пешком.', None),
+    ('Домодедовская', '', 'Метро в 78 минутах пешком.', None),
+])
+def test_browser_duration_uses_station_header_not_seller_prose(station, header, prose, expected):
+    item = normalize_card({
+        'url': 'https://www.cian.ru/sale/flat/335042696/',
+        'metro': station,
+        'text': f'1-комн. квартира, 35,5 м², 9/12 этаж\n{station}\n{header}\n'
+                f'Москва, улица Тестовая, 1\n14 900 000 ₽\n{prose}',
+    })
+    assert item.get('metro_walk_minutes') == expected
+    assert item.get('metro_time') == (f'{expected} мин. пешком' if expected else None)
+    assert prose in item['card_text']
+
+
+def test_browser_does_not_find_station_duration_in_prose_after_price():
+    item = normalize_card({
+        'url': 'https://www.cian.ru/sale/flat/123/', 'metro': 'Сокол',
+        'text': 'Квартира\nМосква, улица Тестовая, 1\n12 000 000 ₽\nСокол\n5 минут пешком',
+    })
+    assert item.get('metro_time') is None
+
+
+def test_explicit_browser_transport_label_wins_over_seller_walk_claim():
+    item = normalize_card({
+        'url': 'https://www.cian.ru/sale/flat/123/', 'metro': 'Сокол',
+        'metro_time': '10 минут транспортом',
+        'text': 'Метро Сокол в 5 минутах пешком.',
+    })
+    assert item['metro_time'] == '10 мин. транспортом'
+    assert item['metro_walk_minutes'] is None
+
+
 def test_adapter_attention_and_service_failure(monkeypatch):
     import app.browser_source as adapter
     original = httpx.Client
