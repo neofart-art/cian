@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from collector.browser_runtime import browser_engine, launch_context
-from collector.result_preview import preview_results, same_search
+from collector.result_preview import preview_results, same_search, search_difference
 
 
 @pytest.mark.parametrize('engine', ['chromium', 'firefox'])
@@ -38,6 +38,19 @@ def test_query_comparison_does_not_ignore_constraints():
     assert not same_search(a.replace('777','888'), a)
     assert not same_search(a.replace('www.cian.ru','evil.test'), a)
     assert not same_search(a.replace('www.cian.ru','spb.cian.ru'), a)
+
+
+def test_public_query_difference_reports_filters_but_redacts_account_values():
+    expected = 'https://www.cian.ru/cat.php?foot_min=10&saved_search_id=PRIVATE_SAVED_ID'
+    actual = 'https://www.cian.ru/cat.php?foot_min=20&p=1&session=PRIVATE_TOKEN&context=PRIVATE_CONTEXT'
+    difference = search_difference(actual, expected)
+    assert difference['host_matches'] and difference['path_matches']
+    changes = {v['parameter']:v for v in difference['parameters']}
+    assert changes['foot_min']['configured'] == ['10']
+    assert changes['foot_min']['opened'] == ['20']
+    assert changes['p']['opened'] == ['1']
+    assert changes['session'] == {'parameter':'session','values_redacted':True}
+    assert 'PRIVATE' not in json.dumps(difference)
 
 
 def test_preview_reads_current_page_only_and_does_not_collect():

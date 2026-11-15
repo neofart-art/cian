@@ -48,3 +48,34 @@ def test_preview_ids_match_explicit_scope_and_screenshot(engine, tmp_path, monke
             assert result['status'] == 'error' and result['items'] == []
             await browser.close()
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('engine', ['chromium','firefox'])
+def test_observed_cian_six_offers_and_nineteen_suggestions_share_css_class(engine):
+    async def run():
+        from playwright.async_api import async_playwright
+        from collector.result_preview import SCOPED_SNAPSHOT, PREVIEW_DOM
+        from collector.page import CARD_SNAPSHOT
+        primary = ['336044883','335594112','335586264','335396246','335042696','335016684']
+        suggestions = ['336311683'] + [str(900000000+i) for i in range(18)]
+        def card(i):
+            return f'<article data-name="CardComponent"><a href="https://www.cian.ru/sale/flat/{i}/">Квартира</a></article>'
+        async with async_playwright() as p:
+            browser = await getattr(p,engine).launch(headless=True)
+            page = await browser.new_page()
+            await page.set_content('<main data-name="SearchEngineResultsPageContainer">'
+                '<div data-name="Offers" class="shared-wrapper">'+''.join(map(card,primary))+'</div>'
+                '<h2>Дополнительные предложения по вашему запросу</h2>'
+                '<div data-name="SuggestionsLayout" class="shared-wrapper">'+''.join(map(card,suggestions))+'</div></main>')
+            selector = '[data-name="Offers"]'
+            preview = await page.evaluate(PREVIEW_DOM, selector)
+            assert len(preview['offers']) == 25
+            assert [o['id'] for o in preview['offers'] if o['in_selected_container']] == primary
+            scoped = await page.evaluate(SCOPED_SNAPSHOT, selector)
+            assert scoped['scope_confirmed'] and scoped['matching'] == 6
+            assert all('336311683' not in c['url'] for c in scoped['cards'])
+            # Even the old broad fallback must now recognize the observed suggestion block.
+            broad = await page.evaluate(CARD_SNAPSHOT)
+            assert len(broad['cards']) == 6 and broad['skipped'] == 19
+            await browser.close()
+    asyncio.run(run())

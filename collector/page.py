@@ -91,12 +91,12 @@ EXTRACT_CARD = r"""el => {
   const recommended = (() => {
     // Only public section labels/containers; no embedded state or network APIs.
     for (let node = el.parentElement; node && node !== document.body; node = node.parentElement) {
-      if (/recommend|similar|relatedoffers/i.test(node.getAttribute('data-name') || '')) return true;
+      if (/recommend|similar|relatedoffers|suggestionslayout/i.test(node.getAttribute('data-name') || '')) return true;
     }
     const root = el.closest('main') || document.body;
     return [...root.querySelectorAll('h2,h3,[role="heading"]')].some(node =>
       visible(node) && !(el.contains(node)) &&
-      /^(похожие (?:объявления|предложения|квартиры)|рекомендуем(?: также)?|посмотрите также|вам (?:может|могут) понравиться|объявления (?:в|из) соседних районов|предложения по похожим параметрам)[.!:]?$/i.test(node.innerText.trim()) &&
+      /^(похожие (?:объявления|предложения|квартиры)|дополнительные предложения по вашему запросу|рекомендуем(?: также)?|посмотрите также|вам (?:может|могут) понравиться|объявления (?:в|из) соседних районов|предложения по похожим параметрам)[.!:]?$/i.test(node.innerText.trim()) &&
       !!(node.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING));
   })();
   return {
