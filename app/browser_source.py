@@ -1,10 +1,14 @@
 """Internal browser-service adapter. No Playwright/Chromium in the app image."""
 import os
+import logging
 
 import httpx
 
 from app.source_types import SourceBlocked, SourceError
 from app.source import search_url
+from app.browser_admission import Admission
+
+log = logging.getLogger('xata.browser.admission')
 
 
 class BrowserAttention(SourceBlocked):
@@ -35,19 +39,24 @@ class CianBrowserSource:
         return self.request('GET', '/status')
 
     def collect(self, filters):
+        self.last_coverage = None
+        search = os.getenv('CIAN_SEARCH_URL') or search_url(filters)
         result = self.request('POST', '/collect', json={
-            'url': os.getenv('CIAN_SEARCH_URL') or search_url(filters),
+            'url': search,
         })
         self.last_coverage = result.get('coverage')
         if result.get('status') in ('login_required', 'confirmation_required'):
             raise BrowserAttention(result['status'], result['message'])
         if result.get('status') != 'authorized' or not isinstance(result.get('items'), list):
             raise SourceError(result.get('error') or result.get('message') or 'Не удалось подтвердить обычную выдачу ЦИАН.')
-        admitted = [dict(item, source=self.name) for item in result['items']
-                    if item.get('price') is None or item['price'] <= filters['max_price']]
-        if self.last_coverage is not None:
-            self.last_coverage = dict(self.last_coverage,
-                rejected_price=len(result['items']) - len(admitted),
-                admitted_missing_price=sum(item.get('price') is None for item in admitted),
-                admitted=len(admitted))
-        return admitted
+        policy = Admission(search, filters, os.getenv('CIAN_DISTRICT_POLICY', '{}'))
+        admitted, admission = policy.apply(result['items'])
+        self.last_coverage = dict(self.last_coverage or {}, admission=admission)
+        log.info('browser admission received=%d admitted=%d rejected=%d reasons=%s',
+                 admission['received'], admission['admitted'], admission['rejected'], admission['reasons'])
+        if result['items'] and not admitted:
+            missing = admission['missing_district_names']
+            detail = (f' Не подтверждены названия выбранных районов: {missing}.' if missing else '')
+            raise SourceError('Все полученные карточки отклонены проверкой условий; '
+                              'прежние объявления сохранены.' + detail)
+        return [dict(item, source=self.name) for item in admitted]
